@@ -43,7 +43,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: "http://localhost:5173", // 👈 must be specific, not '*'
+    origin: "*", // 👈 must be specific, not '*'
     credentials: true, // 👈 required for cookies/auth headers
   })
 );
@@ -70,9 +70,9 @@ app.use("/api/expense", expenseRouter);
 app.use("/api/analytics", analyticsRouter);
 
 app.use(errorHandler as ErrorRequestHandler);
-app.get("/", (req: Request, res: Response) => {
-  res.send("Hello, Secure and Logged World!");
-});
+// app.get("/", (req: Request, res: Response) => {
+//   res.send("Hello, Secure and Logged World!");
+// });
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   throw new ApiError(404, "Route not found");
@@ -80,9 +80,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Error-handling middleware
 
-// app.get("*", (req, res) => {
-//   res.sendFile("/var/www/kmcc-frontend/dist/index.html");
-// });
+app.get("*", (req, res) => {
+  res.sendFile(
+    "/var/www/alghazal/software/alghazal-frontend-latest/dist/index.html"
+  );
+});
 connectDb().then(() => {
   app.listen(4001, () => {
     console.log(`Server is running on port ${process.env.PORT}`);

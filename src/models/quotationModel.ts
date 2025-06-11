@@ -76,7 +76,6 @@ const quotationSchema = new Schema<IQuotation>(
       type: Schema.Types.ObjectId,
       ref: "Project",
       required: true,
-      unique: true,
     },
     estimation: {
       type: Schema.Types.ObjectId,

@@ -80,12 +80,10 @@ const estimationSchema = new Schema<IEstimation>(
       type: Schema.Types.ObjectId,
       ref: "Project",
       required: true,
-      unique: true,
     },
     estimationNumber: {
       type: String,
       required: true,
-      unique: true,
     },
     workStartDate: {
       type: Date,

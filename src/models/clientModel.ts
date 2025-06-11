@@ -106,7 +106,7 @@ const clientSchema = new Schema<IClient>(
     trnNumber: {
       type: String,
       required: true,
-      unique: true,
+
       trim: true,
     },
     accountNumber: {

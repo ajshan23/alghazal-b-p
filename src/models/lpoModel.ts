@@ -47,7 +47,6 @@ const lpoSchema = new Schema<ILPO>(
     lpoNumber: {
       type: String,
       required: true,
-      unique: true,
     },
     lpoDate: {
       type: Date,
@@ -88,7 +87,7 @@ lpoSchema.pre<ILPO>("save", function (next) {
 });
 
 // Indexes
-lpoSchema.index({ project: 1 });
+
 lpoSchema.index({ lpoNumber: 1 });
 lpoSchema.index({ supplier: 1 });
 lpoSchema.index({ lpoDate: 1 });
