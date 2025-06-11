@@ -50,7 +50,7 @@ app.use(
 // app.use(limiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static("/var/www/kmcc-frontend/dist/"));
+
 app.use(morgan("dev")); // Logging
 app.get("/test-log", (req, res) => {
   console.log("Test log route hit"); // This should appear in console
@@ -70,9 +70,9 @@ app.use("/api/expense", expenseRouter);
 app.use("/api/analytics", analyticsRouter);
 
 app.use(errorHandler as ErrorRequestHandler);
-// app.get("/", (req: Request, res: Response) => {
-//   res.send("Hello, Secure and Logged World!");
-// });
+app.get("/", (req: Request, res: Response) => {
+  res.send("Hello, Secure and Logged World!");
+});
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   throw new ApiError(404, "Route not found");
@@ -80,11 +80,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Error-handling middleware
 
-app.get("*", (req, res) => {
-  res.sendFile(
-    "/var/www/alghazal/software/alghazal-frontend-latest/dist/index.html"
-  );
-});
+// app.get("*", (req, res) => {
+//   res.sendFile("/var/www/kmcc-frontend/dist/index.html");
+// });
 connectDb().then(() => {
   app.listen(4001, () => {
     console.log(`Server is running on port ${process.env.PORT}`);
