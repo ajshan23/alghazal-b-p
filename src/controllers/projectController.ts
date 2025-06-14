@@ -13,7 +13,7 @@ import { LPO } from "../models/lpoModel";
 import dayjs from "dayjs";
 import mongoose, { Types } from "mongoose";
 import { generateProjectNumber } from "../utils/documentNumbers";
-import { WorkProgressTemplateParams } from "@/template/workProgressEmailTemplate";
+import { WorkProgressTemplateParams } from "../template/workProgressEmailTemplate";
 import { Expense } from "../models/expenseModel";
 import puppeteer from "puppeteer";
 

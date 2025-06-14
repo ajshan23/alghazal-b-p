@@ -11,7 +11,7 @@ import { Comment } from "../models/commentModel";
 import { IUser, User } from "../models/userModel";
 import { mailer } from "../utils/mailer";
 import { generateRelatedDocumentNumber } from "../utils/documentNumbers";
-import { EstimationTemplateParams } from "@/template/estimationCheckedEmailTemplate";
+import { EstimationTemplateParams } from "../template/estimationCheckedEmailTemplate";
 
 export const createEstimation = asyncHandler(
   async (req: Request, res: Response) => {
