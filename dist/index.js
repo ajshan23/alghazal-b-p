@@ -37,15 +37,14 @@ const app = (0, express_1.default)();
 //   // })
 // );
 app.use((0, cors_1.default)({
-    origin: "http://localhost:5173", // 👈 must be specific, not '*'
+    origin: "https://new.alghazalgroup.com", // 👈 must be specific, not '*'
     credentials: true, // 👈 required for cookies/auth headers
 }));
 // app.use(limiter);
 app.use(express_1.default.json());
 app.use(express_1.default.urlencoded({ extended: true }));
-app.use(express_1.default.static("/var/www/kmcc-frontend/dist/"));
 app.use((0, morgan_1.default)("dev")); // Logging
-app.get("/test-log", (req, res) => {
+app.get("/", (req, res) => {
     console.log("Test log route hit"); // This should appear in console
     res.send("Test log");
 });
@@ -62,9 +61,6 @@ app.use("/api/attandance", attandanceRoutes_1.default);
 app.use("/api/expense", expenseRoutes_1.default);
 app.use("/api/analytics", analyticalRoute_1.default);
 app.use(errorHandler_1.errorHandler);
-app.get("/", (req, res) => {
-    res.send("Hello, Secure and Logged World!");
-});
 app.use((req, res, next) => {
     throw new apiHandlerHelpers_1.ApiError(404, "Route not found");
 });

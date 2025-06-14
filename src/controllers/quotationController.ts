@@ -3,11 +3,13 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { ApiResponse } from "../utils/apiHandlerHelpers";
 import { ApiError } from "../utils/apiHandlerHelpers";
 import { Quotation } from "../models/quotationModel";
-import { Project } from "../models/projectModel";
+import { IProject, Project } from "../models/projectModel";
 import { Estimation } from "../models/estimationModel";
 import { uploadItemImage, deleteFileFromS3 } from "../utils/uploadConf";
 import puppeteer from "puppeteer";
 import { generateRelatedDocumentNumber } from "../utils/documentNumbers";
+import { IUser } from "../models/userModel";
+import { IClient } from "../models/clientModel";
 
 export const createQuotation = asyncHandler(
   async (req: Request, res: Response) => {
@@ -215,9 +217,9 @@ export const generateQuotationPdf = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params;
 
-    // Populate all necessary fields
+    // Populate all necessary fields with proper typing
     const quotation = await Quotation.findById(id)
-      .populate({
+      .populate<{ project: IProject & { client: IClient } }>({
         path: "project",
         select: "projectName client siteAddress",
         populate: {
@@ -225,17 +227,30 @@ export const generateQuotationPdf = asyncHandler(
           select: "clientName clientAddress mobileNumber telephoneNumber email",
         },
       })
-      .populate("preparedBy", "firstName lastName signatureImage")
-      .populate("approvedBy", "firstName lastName signatureImage");
+      .populate<{ preparedBy: IUser }>(
+        "preparedBy",
+        "firstName lastName signatureImage"
+      )
+      .populate<{ approvedBy: IUser }>(
+        "approvedBy",
+        "firstName lastName signatureImage"
+      );
 
     if (!quotation) throw new ApiError(404, "Quotation not found");
 
-    // Verify populated data exists
-    if (!quotation.project || !quotation.project.client) {
+    // Verify populated data exists with type guards
+    if (
+      !quotation.project ||
+      typeof quotation.project !== "object" ||
+      !("client" in quotation.project)
+    ) {
       throw new ApiError(400, "Client information not found");
     }
 
-    // Calculate totals (though they should be pre-calculated by the pre-save hook)
+    const client = quotation.project.client as IClient;
+    const preparedBy = quotation.preparedBy as IUser;
+
+    // Calculate totals
     const subtotal = quotation.items.reduce(
       (sum, item) => sum + item.totalPrice,
       0
@@ -248,15 +263,23 @@ export const generateQuotationPdf = asyncHandler(
       return date ? new Date(date).toLocaleDateString("en-GB") : "";
     };
 
-    const preparedBy = quotation.preparedBy;
-    // const approvedBy = quotation.approvedBy;
+    // Handle estimation
     const estimationId = quotation.estimation;
     const estimation = await Estimation.findById(estimationId)
-      .populate("approvedBy", "firstName lastName signatureImage")
-      .populate("preparedBy", "firstName lastName signatureImage");
-    const approvedBy = estimation.approvedBy;
-    // const approvedBy = estimation.approvedBy;
-    console.log("Approved By:", approvedBy);
+      .populate<{ approvedBy: IUser }>(
+        "approvedBy",
+        "firstName lastName signatureImage"
+      )
+      .populate<{ preparedBy: IUser }>(
+        "preparedBy",
+        "firstName lastName signatureImage"
+      );
+
+    if (!estimation) {
+      throw new ApiError(404, "Estimation not found");
+    }
+
+    const approvedBy = estimation.approvedBy as IUser;
 
     // Prepare HTML content
     let htmlContent = `
@@ -387,7 +410,11 @@ export const generateQuotationPdf = asyncHandler(
                 Email: ${quotation.project.client.email || "N/A"}
               </p>
               <p class="s2" style="padding-top: 1pt; padding-left: 1pt; text-indent: 0pt; text-align: left;">
-                Site: ${quotation.project.siteAddress || "N/A"}
+                Site: ${
+                  quotation.project.location +
+                    quotation.project.building +
+                    quotation.project.apartmentNumber || "N/A"
+                }
               </p>
             </td>
             <td style="width: 63pt; border-top-style: solid; border-top-width: 2pt; border-left-style: solid; border-left-width: 2pt; border-bottom-style: solid; border-bottom-width: 1pt; border-right-style: solid; border-right-width: 1pt;">
@@ -652,7 +679,7 @@ ${quotation.items
 
     // Generate PDF
     const browser = await puppeteer.launch({
-      headless: "new",
+      headless: "shell",
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 

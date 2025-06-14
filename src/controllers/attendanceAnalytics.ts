@@ -190,7 +190,7 @@ export const getEmployeeTrend = asyncHandler(
           employee: {
             id: employee._id,
             name: `${employee.firstName} ${employee.lastName}`,
-            position: employee.position,
+            position: employee.role,
           },
           months: Number(months),
           trendData,
@@ -357,8 +357,8 @@ export const getProjectAnalytics = asyncHandler(
           project: {
             id: project._id,
             name: project.projectName,
-            startDate: project.startDate,
-            endDate: project.endDate,
+            startDate: project.createdAt,
+            endDate: project.updatedAt,
           },
           period,
           year,

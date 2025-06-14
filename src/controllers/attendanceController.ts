@@ -3,16 +3,22 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { ApiResponse } from "../utils/apiHandlerHelpers";
 import { ApiError } from "../utils/apiHandlerHelpers";
 import { Attendance } from "../models/attendanceModel";
-import { Project } from "../models/projectModel";
+import { IProject, Project } from "../models/projectModel";
 import dayjs from "dayjs";
-import { User } from "../models/userModel";
+import { IUser, User } from "../models/userModel";
+import { Types } from "mongoose";
 
 // Mark attendance (supports both project and normal types)
 export const markAttendance = asyncHandler(
   async (req: Request, res: Response) => {
     const { projectId, userId } = req.params;
     const { present, type = "project" } = req.body;
-    const markedBy = req.user?.userId;
+
+    // Ensure markedBy exists and is valid
+    if (!req.user?.userId) {
+      throw new ApiError(401, "Unauthorized - User not authenticated");
+    }
+    const markedBy = new Types.ObjectId(req.user.userId); // Convert string to ObjectId
 
     // Get today's date at midnight (00:00:00)
     const today = new Date();
@@ -28,26 +34,27 @@ export const markAttendance = asyncHandler(
 
     let project;
     if (type === "project") {
-      if (!projectId)
+      if (!projectId) {
         throw new ApiError(
           400,
           "Project ID is required for project attendance"
         );
+      }
 
       project = await Project.findById(projectId);
       if (!project) throw new ApiError(404, "Project not found");
 
-      // Check if user is assigned to project
+      // Check if user is assigned to project with proper null checks
       const isAssigned =
-        project.assignedWorkers.some((w) => w.equals(userId)) ||
-        project.assignedDriver.equals(userId);
+        (project.assignedWorkers?.some((w) => w.equals(userId)) ?? false) ||
+        (project.assignedDriver?.equals(userId) ?? false);
 
       if (!isAssigned) {
         throw new ApiError(400, "User is not assigned to this project");
       }
 
-      // Only assigned driver can mark attendance for project
-      if (!project.assignedDriver.equals(markedBy)) {
+      // Only assigned driver can mark attendance for project (with null check)
+      if (!project.assignedDriver?.equals(markedBy)) {
         throw new ApiError(
           403,
           "Only assigned driver can mark project attendance"
@@ -74,7 +81,7 @@ export const markAttendance = asyncHandler(
     if (attendance) {
       // Update existing record
       attendance.present = present;
-      attendance.markedBy = markedBy;
+      attendance.markedBy = markedBy; // Now guaranteed to be ObjectId
       await attendance.save();
     } else {
       // Create new record
@@ -82,7 +89,7 @@ export const markAttendance = asyncHandler(
         project: type === "project" ? projectId : undefined,
         user: userId,
         present,
-        markedBy,
+        markedBy, // Now guaranteed to be ObjectId
         date: today,
         type,
       });
@@ -93,7 +100,6 @@ export const markAttendance = asyncHandler(
       .json(new ApiResponse(200, attendance, "Attendance marked successfully"));
   }
 );
-
 // Get attendance records (supports both types)
 export const getAttendance = asyncHandler(
   async (req: Request, res: Response) => {
@@ -160,11 +166,20 @@ export const getTodayProjectAttendance = asyncHandler(
 
     // Get project with assigned workers
     const project = await Project.findById(projectId)
-      .populate(
+      .populate<{
+        assignedWorkers: (Pick<
+          IUser,
+          "_id" | "firstName" | "lastName" | "profileImage" | "phoneNumbers"
+        > & { _id: Types.ObjectId })[];
+      }>(
         "assignedWorkers",
-        "firstName lastName profileImage mobileNumber"
+        "_id firstName lastName profileImage phoneNumbers" // Added _id to the field selection
       )
-      .populate("assignedDriver", "firstName lastName");
+      .populate<{
+        assignedDriver: Pick<IUser, "_id" | "firstName" | "lastName"> & {
+          _id: Types.ObjectId;
+        };
+      }>("assignedDriver", "_id firstName lastName");
 
     if (!project) {
       throw new ApiError(404, "Project not found");
@@ -181,21 +196,22 @@ export const getTodayProjectAttendance = asyncHandler(
     });
 
     // Merge worker data with attendance status
-    const workersWithAttendance = project.assignedWorkers.map((worker) => {
-      const attendanceRecord = attendance.find((record) =>
-        record.user.equals(worker._id)
-      );
-      return {
-        _id: worker._id,
-        firstName: worker.firstName,
-        lastName: worker.lastName,
-        profileImage: worker.profileImage,
-        mobileNumber: worker.mobileNumber,
-        present: attendanceRecord?.present || false,
-        markedBy: attendanceRecord?.markedBy || null,
-        markedAt: attendanceRecord?.createdAt || null,
-      };
-    });
+    const workersWithAttendance =
+      project.assignedWorkers?.map((worker) => {
+        const attendanceRecord = attendance.find((record) =>
+          record.user.equals(worker._id)
+        );
+        return {
+          _id: worker._id,
+          firstName: worker.firstName,
+          lastName: worker.lastName,
+          profileImage: worker.profileImage,
+          phoneNumbers: worker.phoneNumbers,
+          present: attendanceRecord?.present || false,
+          markedBy: attendanceRecord?.markedBy || null,
+          markedAt: attendanceRecord?.createdAt || null,
+        };
+      }) || [];
 
     res.status(200).json(
       new ApiResponse(

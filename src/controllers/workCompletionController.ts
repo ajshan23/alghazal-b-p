@@ -2,17 +2,18 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiResponse } from "../utils/apiHandlerHelpers";
 import { ApiError } from "../utils/apiHandlerHelpers";
-import { WorkCompletion } from "../models/workCompletionModel";
-import { Project } from "../models/projectModel";
+import { IWorkCompletionImage, WorkCompletion } from "../models/workCompletionModel";
+import { IProject, Project } from "../models/projectModel";
 import {
   uploadWorkCompletionImagesToS3,
   deleteFileFromS3,
 } from "../utils/uploadConf";
-import { Client } from "../models/clientModel";
+import { Client, IClient } from "../models/clientModel";
 import { LPO } from "../models/lpoModel";
 import { generateRelatedDocumentNumber } from "../utils/documentNumbers";
 import puppeteer from "puppeteer";
-import { User } from "../models/userModel";
+import { IUser, User } from "../models/userModel";
+import { Types } from "mongoose";
 
 export const createWorkCompletion = asyncHandler(
   async (req: Request, res: Response) => {
@@ -59,9 +60,13 @@ export const uploadWorkCompletionImages = asyncHandler(
       throw new ApiError(400, "No images uploaded");
     }
 
+    if (!req.user?.userId) {
+      throw new ApiError(401, "Unauthorized");
+    }
+
     // Convert titles to array if it's a string (for single file upload)
-    const titlesArray = Array.isArray(titles) ? titles : [titles];
-    const descriptionsArray = Array.isArray(descriptions)
+    const titlesArray: string[] = Array.isArray(titles) ? titles : [titles];
+    const descriptionsArray: string[] = Array.isArray(descriptions)
       ? descriptions
       : [descriptions];
 
@@ -70,11 +75,7 @@ export const uploadWorkCompletionImages = asyncHandler(
       throw new ApiError(400, "Number of titles must match number of images");
     }
 
-    if (
-      titlesArray.some(
-        (title) => !title || typeof title !== "string" || !title.trim()
-      )
-    ) {
+    if (titlesArray.some((title) => !title?.trim())) {
       throw new ApiError(400, "All images must have a non-empty title");
     }
 
@@ -84,9 +85,12 @@ export const uploadWorkCompletionImages = asyncHandler(
     if (!workCompletion) {
       workCompletion = await WorkCompletion.create({
         project: projectId,
-        createdBy: req.user?.userId,
+        createdBy: req.user.userId,
+        images: [], // Initialize empty images array
       });
-    } else if (workCompletion.createdBy.toString() !== req.user?.userId) {
+    } else if (
+      workCompletion.createdBy.toString() !== req.user.userId.toString()
+    ) {
       throw new ApiError(403, "Not authorized to update this work completion");
     }
 
@@ -96,12 +100,18 @@ export const uploadWorkCompletionImages = asyncHandler(
       throw new ApiError(500, "Failed to upload images to S3");
     }
 
-    const newImages = files.map((file, index) => ({
-      title: titlesArray[index],
-      imageUrl: uploadResults.uploadData[index].url,
-      s3Key: uploadResults.uploadData[index].key,
-      description: descriptionsArray[index] || "",
-    }));
+    // Create properly typed image objects with all required fields
+    const newImages: any[] = uploadResults.uploadData.map(
+      (fileData, index) => ({
+        _id: new Types.ObjectId(), // Mongoose will automatically add this if not provided
+        title: titlesArray[index],
+        imageUrl: fileData.url,
+        s3Key: fileData.key,
+        description: descriptionsArray[index] || "",
+        uploadedAt: new Date(),
+        // Include any other fields defined in IWorkCompletionImage
+      })
+    );
 
     workCompletion.images.push(...newImages);
     await workCompletion.save();
@@ -113,7 +123,6 @@ export const uploadWorkCompletionImages = asyncHandler(
       );
   }
 );
-
 export const getWorkCompletion = asyncHandler(
   async (req: Request, res: Response) => {
     const { projectId } = req.params;
@@ -229,18 +238,31 @@ export const getCompletionData = asyncHandler(
       throw new ApiError(400, "Project ID is required");
     }
 
-    // Get project details
+    // Define types for populated fields
+    type PopulatedProject = Omit<
+      IProject,
+      "client" | "assignedTo" | "createdBy"
+    > & {
+      client: IClient;
+      assignedTo?: IUser;
+      createdBy: IUser;
+    };
+
+    // Get project details with proper typing for populated fields
     const project = await Project.findById(projectId)
-      .populate("client", "clientName ")
-      .populate("assignedTo", "firstName lastName")
-      .populate("createdBy", "firstName lastName");
+      .populate<{ client: IClient }>("client", "clientName")
+      .populate<{ assignedTo: IUser }>("assignedTo", "firstName lastName")
+      .populate<{ createdBy: IUser }>("createdBy", "firstName lastName");
 
     if (!project) {
       throw new ApiError(404, "Project not found");
     }
 
-    // Get client details
-    const client = await Client.findById(project.client);
+    // Type assertion for populated project
+    const populatedProject = project as unknown as PopulatedProject;
+
+    // Get client details (already populated)
+    const client = populatedProject.client;
     if (!client) {
       throw new ApiError(404, "Client not found");
     }
@@ -255,31 +277,35 @@ export const getCompletionData = asyncHandler(
       .populate("createdBy", "firstName lastName")
       .sort({ createdAt: -1 });
 
-    // Construct the response object
+    // Construct the response object with proper typing
     const responseData = {
-      _id: project._id.toString(),
-      referenceNumber: `COMP-${project._id.toString().slice(-6).toUpperCase()}`,
-      fmContractor: "Al Ghazal Al Abyad Technical Services", // Hardcoded as per frontend
+      _id: populatedProject._id.toString(),
+      referenceNumber: `COMP-${populatedProject._id
+        .toString()
+        .slice(-6)
+        .toUpperCase()}`,
+      fmContractor: "Al Ghazal Al Abyad Technical Services",
       subContractor: client.clientName,
       projectDescription:
-        project.projectDescription || "No description provided",
-      location: `${project.siteAddress}, ${project.siteLocation}`,
+        populatedProject.projectDescription || "No description provided",
+      location: `${populatedProject.location}, ${populatedProject.building}, ${populatedProject.apartmentNumber}`,
       completionDate:
-        project.updatedAt?.toISOString() || new Date().toISOString(),
+        populatedProject.updatedAt?.toISOString() || new Date().toISOString(),
       lpoNumber: lpo?.lpoNumber || "Not available",
       lpoDate: lpo?.lpoDate?.toISOString() || "Not available",
       handover: {
-        company: "AL GHAZAL AL ABYAD TECHNICAL SERVICES", // Hardcoded as per frontend
-        name: project.assignedTo
-          ? `${project.assignedTo.firstName} ${project.assignedTo.lastName}`
+        company: "AL GHAZAL AL ABYAD TECHNICAL SERVICES",
+        name: populatedProject.assignedTo
+          ? `${populatedProject.assignedTo.firstName} ${populatedProject.assignedTo.lastName}`
           : "Not assigned",
-        signature: "", // Will be added later
-        date: project.updatedAt?.toISOString() || new Date().toISOString(),
+        signature: "",
+        date:
+          populatedProject.updatedAt?.toISOString() || new Date().toISOString(),
       },
       acceptance: {
         company: client.clientName,
-        name: client.clientName, // Using client name as representative
-        signature: "", // Will be added later
+        name: client.clientName,
+        signature: "",
         date: new Date().toISOString(),
       },
       sitePictures:
@@ -288,10 +314,13 @@ export const getCompletionData = asyncHandler(
           caption: img.title,
         })) || [],
       project: {
-        _id: project._id.toString(),
-        projectName: project.projectName,
+        _id: populatedProject._id.toString(),
+        projectName: populatedProject.projectName,
       },
-      preparedBy: project.createdBy,
+      preparedBy: {
+        _id: populatedProject.createdBy._id.toString(),
+        name: `${populatedProject.createdBy.firstName} ${populatedProject.createdBy.lastName}`,
+      },
       createdAt:
         workCompletion?.createdAt?.toISOString() || new Date().toISOString(),
       updatedAt:
@@ -309,7 +338,6 @@ export const getCompletionData = asyncHandler(
       );
   }
 );
-
 export const generateCompletionCertificatePdf = asyncHandler(
   async (req: Request, res: Response) => {
     const { projectId } = req.params;
@@ -340,7 +368,7 @@ export const generateCompletionCertificatePdf = asyncHandler(
       .populate("createdBy", "firstName lastName signatureImage")
       .sort({ createdAt: -1 });
 
-    const engineer = workCompletion?.createdBy || project.assignedTo;
+  const engineer: any = workCompletion?.createdBy || project.assignedTo;
 
     // Format dates
     const formatDate = (date: Date | undefined) => {
@@ -589,7 +617,7 @@ export const generateCompletionCertificatePdf = asyncHandler(
 
     // Generate PDF
     const browser = await puppeteer.launch({
-      headless: "new",
+      headless: "shell",
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 

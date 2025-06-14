@@ -7,7 +7,7 @@ exports.connectDb = void 0;
 const mongoose_1 = __importDefault(require("mongoose"));
 const connectDb = async () => {
     try {
-        const conn = await mongoose_1.default.connect("mongodb://localhost:27017/alghaza");
+        const conn = await mongoose_1.default.connect("mongodb://localhost:27017/alghazal");
         console.log(`MongoDB connected: ${conn.connection.host}`);
     }
     catch (error) {

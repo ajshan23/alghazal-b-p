@@ -3,15 +3,15 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { ApiResponse } from "../utils/apiHandlerHelpers";
 import { ApiError } from "../utils/apiHandlerHelpers";
 import { IProject, Project } from "../models/projectModel";
-import { Client } from "../models/clientModel";
+import { Client, IClient } from "../models/clientModel";
 import { Estimation } from "../models/estimationModel";
-import { User } from "@/models/userModel";
+import { IUser, User } from "@/models/userModel";
 import { Quotation } from "../models/quotationModel";
 import { mailer } from "../utils/mailer";
 import { Comment } from "../models/commentModel";
 import { LPO } from "../models/lpoModel";
 import dayjs from "dayjs";
-import { Types } from "mongoose";
+import mongoose, { Types } from "mongoose";
 import { generateProjectNumber } from "../utils/documentNumbers";
 import { WorkProgressTemplateParams } from "@/template/workProgressEmailTemplate";
 import { Expense } from "../models/expenseModel";
@@ -39,9 +39,7 @@ const validStatusTransitions: Record<string, string[]> = {
   on_hold: ["in_progress", "work_started", "cancelled"],
   cancelled: [],
   project_closed: [],
-  lpo_received: ["team_assigned", "on_hold", "cancelled"],
   team_assigned: ["work_started", "on_hold"],
-  work_started: ["in_progress", "on_hold", "cancelled"],
 };
 
 export const createProject = asyncHandler(
@@ -440,7 +438,10 @@ export const updateProjectProgress = asyncHandler(
       throw new ApiError(400, "Progress must be between 0 and 100");
     }
 
-    const project = await Project.findById(id).populate("assignedTo client");
+    const project = await Project.findById(id)
+      .populate<{ client: IClient }>("client")
+      .populate<{ assignedTo: IUser }>("assignedTo");
+
     if (!project) {
       throw new ApiError(404, "Project not found");
     }
@@ -492,15 +493,23 @@ export const updateProjectProgress = asyncHandler(
         const recipients = [];
 
         // Add client if exists
-        if (project.client?.email) {
+        if (
+          project.client &&
+          typeof project.client === "object" &&
+          "email" in project.client
+        ) {
           recipients.push({
             email: project.client.email,
-            name: project.client.firstName || "Client",
+            name: (project.client as IClient).clientName || "Client",
           });
         }
 
         // Add assigned engineer if exists
-        if (project.assignedTo?.email) {
+        if (
+          project.assignedTo &&
+          typeof project.assignedTo === "object" &&
+          "email" in project.assignedTo
+        ) {
           recipients.push({
             email: project.assignedTo.email,
             name: project.assignedTo.firstName || "Engineer",
@@ -628,14 +637,14 @@ export const generateInvoiceData = asyncHandler(
       throw new ApiError(400, "Valid project ID is required");
     }
 
-    // Get project data with more strict validation
+    // Get project data with proper type annotations for populated fields
     const project = await Project.findById(projectId)
-      .populate(
+      .populate<{ client: IClient }>(
         "client",
-        "clientName clientAddress mobileNumber contactPerson trnNumber"
+        "clientName clientAddress mobileNumber contactPerson trnNumber pincode"
       )
-      .populate("createdBy", "firstName lastName")
-      .populate("assignedTo", "firstName lastName")
+      .populate<{ createdBy: IUser }>("createdBy", "firstName lastName")
+      .populate<{ assignedTo: IUser }>("assignedTo", "firstName lastName")
       .lean();
 
     if (!project) {
@@ -664,17 +673,25 @@ export const generateInvoiceData = asyncHandler(
       dayjs().month() + 1
     ).padStart(2, "0")}-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    // Enhanced vendee information
+    // Type-safe client data extraction
+    const clientData =
+      typeof project.client === "object" ? project.client : null;
+    const assignedToData =
+      typeof project.assignedTo === "object" ? project.assignedTo : null;
+    const createdByData =
+      typeof project.createdBy === "object" ? project.createdBy : null;
+
+    // Enhanced vendee information with proper type checking
     const vendeeInfo = {
-      name: project.client.clientName || "IMDAAD LLC",
-      contactPerson: project.assignedTo
-        ? `Mr. ${project.assignedTo.firstName} ${project.assignedTo.lastName}`
-        : project.client.contactPerson || "N/A",
-      poBox: project.client.pincode || "18220",
-      address: project.client.clientAddress || "DUBAI - UAE",
-      phone: project.client.mobileNumber || "(04) 812 8888",
+      name: clientData?.clientName || "IMDAAD LLC",
+      contactPerson: assignedToData
+        ? `Mr. ${assignedToData.firstName} ${assignedToData.lastName}`
+        : clientData?.clientName || "N/A",
+      poBox: clientData?.pincode || "18220",
+      address: clientData?.clientAddress || "DUBAI - UAE",
+      phone: clientData?.mobileNumber || "(04) 812 8888",
       fax: "(04) 881 8405",
-      trn: project.client.trnNumber || "100236819700003",
+      trn: clientData?.trnNumber || "100236819700003",
       grnNumber: lpo.lpoNumber || "N/A",
       supplierNumber: "PO25IMD7595",
       servicePeriod: `${dayjs(project.createdAt).format(
@@ -701,7 +718,7 @@ export const generateInvoiceData = asyncHandler(
       total: item.totalPrice || 0,
     }));
 
-    // Enhanced response structure
+    // Enhanced response structure with type-safe checks
     const response = {
       _id: project._id.toString(),
       invoiceNumber,
@@ -719,9 +736,9 @@ export const generateInvoiceData = asyncHandler(
         totalReceivable: quotation.netAmount || 0,
       },
       preparedBy: {
-        _id: project.createdBy._id.toString(),
-        firstName: project.createdBy.firstName,
-        lastName: project.createdBy.lastName,
+        _id: createdByData?._id.toString() || "",
+        firstName: createdByData?.firstName || "N/A",
+        lastName: createdByData?.lastName || "N/A",
       },
     };
 
@@ -821,8 +838,12 @@ export const assignTeamAndDriver = asyncHandler(
     // Update project
     project.assignedWorkers = workers;
     project.assignedDriver = driverId;
+
     project.status = "team_assigned";
-    project.updatedBy = req.user?.userId;
+
+    project.updatedBy = req.user?.userId
+      ? new mongoose.Types.ObjectId(req.user.userId)
+      : undefined;
     await project.save();
 
     // Send notifications (implementation depends on your mailer service)
@@ -965,85 +986,85 @@ export const updateWorkersAndDriver = asyncHandler(
 );
 
 // Notification helper specifically for workers/driver updates
-const sendWorkersDriverNotification = async (project: any) => {
-  try {
-    // Get all admin and super_admin users
-    const adminUsers = await User.find({
-      role: { $in: ["admin", "super_admin"] },
-      email: { $exists: true, $ne: "" },
-    }).select("email firstName");
+// const sendWorkersDriverNotification = async (project: any) => {
+//   try {
+//     // Get all admin and super_admin users
+//     const adminUsers = await User.find({
+//       role: { $in: ["admin", "super_admin"] },
+//       email: { $exists: true, $ne: "" },
+//     }).select("email firstName");
 
-    // Get all assigned workers and driver details
-    const assignedUsers = await User.find({
-      _id: {
-        $in: [
-          ...(project.driver ? [project.driver] : []),
-          ...(project.workers || []),
-        ].filter(Boolean),
-      },
-    }).select("email firstName role");
+//     // Get all assigned workers and driver details
+//     const assignedUsers = await User.find({
+//       _id: {
+//         $in: [
+//           ...(project.driver ? [project.driver] : []),
+//           ...(project.workers || []),
+//         ].filter(Boolean),
+//       },
+//     }).select("email firstName role");
 
-    // Create list of all recipients (assigned users + admins)
-    const allRecipients = [
-      ...adminUsers.map((admin) => admin.email),
-      ...assignedUsers.map((user) => user.email),
-    ];
+//     // Create list of all recipients (assigned users + admins)
+//     const allRecipients = [
+//       ...adminUsers.map((admin) => admin.email),
+//       ...assignedUsers.map((user) => user.email),
+//     ];
 
-    // Remove duplicates
-    const uniqueRecipients = [...new Set(allRecipients)];
+//     // Remove duplicates
+//     const uniqueRecipients = [...new Set(allRecipients)];
 
-    // Prepare assignment details for email
-    const assignmentDetails = [];
-    if (project.driver) {
-      const driver = assignedUsers.find((u) => u._id.equals(project.driver));
-      if (driver) {
-        assignmentDetails.push(`Driver: ${driver.firstName}`);
-      }
-    }
-    if (project.workers?.length) {
-      const workers = assignedUsers.filter((u) =>
-        project.workers.some((w: any) => u._id.equals(w))
-      );
-      if (workers.length) {
-        assignmentDetails.push(
-          `Workers: ${workers.map((w) => w.firstName).join(", ")}`
-        );
-      }
-    }
+//     // Prepare assignment details for email
+//     const assignmentDetails = [];
+//     if (project.driver) {
+//       const driver = assignedUsers.find((u) => u._id.equals(project.driver));
+//       if (driver) {
+//         assignmentDetails.push(`Driver: ${driver.firstName}`);
+//       }
+//     }
+//     if (project.workers?.length) {
+//       const workers = assignedUsers.filter((u) =>
+//         project.workers.some((w: any) => u._id.equals(w))
+//       );
+//       if (workers.length) {
+//         assignmentDetails.push(
+//           `Workers: ${workers.map((w) => w.firstName).join(", ")}`
+//         );
+//       }
+//     }
 
-    // Send email if there are recipients and assignments
-    if (uniqueRecipients.length && assignmentDetails.length) {
-      await mailer.sendEmail({
-        to: uniqueRecipients.join(","),
-        subject: `Project Team Update: ${project.projectName}`,
-        templateParams: {
-          userName: "Team",
-          actionUrl: `${process.env.FRONTEND_URL}/app/project-view/${project._id}`,
-          contactEmail: "propertymanagement@alhamra.ae",
-          logoUrl: process.env.LOGO_URL,
-          projectName: project.projectName || "the project",
-          assignmentDetails: assignmentDetails.join("\n"),
-        },
-        text: `Dear Team,\n\nThe team for project "${
-          project.projectName
-        }" has been updated:\n\n${assignmentDetails.join(
-          "\n"
-        )}\n\nView project details: ${
-          process.env.FRONTEND_URL
-        }/app/project-view/${
-          project._id
-        }\n\nBest regards,\nTECHNICAL SERVICE TEAM`,
-        headers: {
-          "X-Priority": "1",
-          Importance: "high",
-        },
-      });
-    }
-  } catch (error) {
-    console.error("Error in sendWorkersDriverNotification:", error);
-    throw error;
-  }
-};
+//     // Send email if there are recipients and assignments
+//     if (uniqueRecipients.length && assignmentDetails.length) {
+//       await mailer.sendEmail({
+//         to: uniqueRecipients.join(","),
+//         subject: `Project Team Update: ${project.projectName}`,
+//         templateParams: {
+//           userName: "Team",
+//           actionUrl: `${process.env.FRONTEND_URL}/app/project-view/${project._id}`,
+//           contactEmail: "propertymanagement@alhamra.ae",
+//           logoUrl: process.env.LOGO_URL,
+//           projectName: project.projectName || "the project",
+//           assignmentDetails: assignmentDetails.join("\n"),
+//         },
+//         text: `Dear Team,\n\nThe team for project "${
+//           project.projectName
+//         }" has been updated:\n\n${assignmentDetails.join(
+//           "\n"
+//         )}\n\nView project details: ${
+//           process.env.FRONTEND_URL
+//         }/app/project-view/${
+//           project._id
+//         }\n\nBest regards,\nTECHNICAL SERVICE TEAM`,
+//         headers: {
+//           "X-Priority": "1",
+//           Importance: "high",
+//         },
+//       });
+//     }
+//   } catch (error) {
+//     console.error("Error in sendWorkersDriverNotification:", error);
+//     throw error;
+//   }
+// };
 
 export const getDriverProjects = asyncHandler(
   async (req: Request, res: Response) => {
@@ -1119,19 +1140,27 @@ export const generateInvoicePdf = asyncHandler(
 
     // Get project data with populated fields
     const project = await Project.findById(projectId)
-      .populate({
+      .populate<{ client: IClient }>({
         path: "client",
         select:
           "clientName clientAddress mobileNumber telephoneNumber email trnNumber pincode",
       })
-      .populate("createdBy", "firstName lastName signatureImage")
-      .populate("assignedTo", "firstName lastName");
+      .populate<{ createdBy: IUser }>(
+        "createdBy",
+        "firstName lastName signatureImage"
+      )
+      .populate<{ assignedTo: IUser }>("assignedTo", "firstName lastName");
 
     if (!project) {
       throw new ApiError(404, "Project not found");
     }
 
-    // Get quotation data
+    // Type-safe access to populated fields
+    const client = project.client as IClient;
+    const assignedTo = project.assignedTo as IUser | null;
+    const createdBy = project.createdBy as IUser;
+
+    // Rest of your existing code...
     const quotation = await Quotation.findOne({ project: projectId });
     if (!quotation) {
       throw new ApiError(404, "Quotation not found for this project");
@@ -3295,21 +3324,21 @@ export const generateInvoicePdf = asyncHandler(
           <tr class="row4">
             <td class="column0 style18 s style19 pl pt" colspan="4">
               <span style="font-weight: bold; color: #000000; font-family: 'Calibri'; font-size: 11pt;">
-                ${project.client.clientName || "IMDAAD LLC"}<br />
+                ${client.clientName || ""}<br />
               </span>
               <span style="color: #000000; font-family: 'Calibri'; font-size: 11pt">
                 ${
-                  project.assignedTo
-                    ? `Mr. ${project.assignedTo.firstName} ${project.assignedTo.lastName}`
+                  assignedTo
+                    ? `Mr. ${assignedTo.firstName} ${assignedTo.lastName}`
                     : "N/A"
                 } <br />
-                PB ${project.client.pincode || "18220"} <br>
-                ${project.client.clientAddress || "DUBAI - UAE"}<br />
-                Phone: ${project.client.mobileNumber || "(04) 812 8888"}<br />
-                Fax: ${project.client.telephoneNumber || "(04) 881 8405"}<br />
+                PB ${client.pincode || "18220"} <br>
+                ${client.clientAddress || "DUBAI - UAE"}<br />
+                Phone: ${client.mobileNumber || "(04) 812 8888"}<br />
+                Fax: ${client.telephoneNumber || "(04) 881 8405"}<br />
               </span>
               <span style="font-weight: bold; color: #000000; font-family: 'Calibri'; font-size: 11pt;">
-                TRN#: ${project.client.trnNumber || "100236819700003"}
+                TRN#: ${client.trnNumber || "100236819700003"}
               </span>
             </td>
             <td class="column4 style10 s style11 pt" colspan="3">
@@ -3328,7 +3357,7 @@ export const generateInvoicePdf = asyncHandler(
               </span><br />
               <span style="font-weight: bold; color: #000000; font-family: 'Calibri'; font-size: 11pt;">
                 Service Period : ${formatDate(
-                  project.createdAt
+                  project.createdAt!
                 )} to ${formatDate(new Date())}
               </span><br />
               <span style="font-weight: bold; color: #000000; font-family: 'Calibri'; font-size: 11pt;">
@@ -3403,9 +3432,9 @@ export const generateInvoicePdf = asyncHandler(
             <td class="column0 style32 s style34" colspan="7">
               <div style="display: flex; align-items: center; justify-content: end;">
                 ${
-                  project.createdBy?.signatureImage
+                  createdBy?.signatureImage
                     ? `
-                  <img src="${project.createdBy.signatureImage}" alt="Signature" width="50" height="50">
+                  <img src="${createdBy.signatureImage}" alt="Signature" width="50" height="50">
                 `
                     : ""
                 }
@@ -3424,7 +3453,7 @@ export const generateInvoicePdf = asyncHandler(
 
     // Generate PDF
     const browser = await puppeteer.launch({
-      headless: "new",
+      headless: "shell",
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 

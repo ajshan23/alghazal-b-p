@@ -6,12 +6,12 @@ export interface IApartment extends Document {
 
 export interface IBuilding extends Document {
   name: string;
-  apartments: IApartment[];
+  apartments: Types.DocumentArray<IApartment>;
 }
 
 export interface ILocation extends Document {
   name: string;
-  buildings: IBuilding[];
+  buildings: Types.DocumentArray<IBuilding>;
 }
 
 export interface IClient extends Document {
@@ -23,7 +23,7 @@ export interface IClient extends Document {
   trnNumber: string;
   email: string;
   accountNumber?: string;
-  locations: ILocation[];
+  locations: Types.DocumentArray<ILocation>;
   createdBy: Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;

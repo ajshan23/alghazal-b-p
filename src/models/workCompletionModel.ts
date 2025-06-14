@@ -1,7 +1,8 @@
 // models/workCompletionModel.ts
-import { Document, Schema, model, Types } from "mongoose";
+import { Document, Schema, model, Types, ObjectId } from "mongoose";
 
 export interface IWorkCompletionImage {
+  _id: ObjectId;
   title: string;
   imageUrl: string;
   s3Key: string; // Important for managing files in S3
@@ -14,6 +15,7 @@ export interface IWorkCompletion extends Document {
   images: IWorkCompletionImage[];
   createdBy: Types.ObjectId;
   createdAt?: Date;
+  updatedAt?: Date;
 }
 
 const workCompletionImageSchema = new Schema<IWorkCompletionImage>({

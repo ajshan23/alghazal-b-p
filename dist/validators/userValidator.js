@@ -1,3 +1,4 @@
+"use strict";
 // import { Request, Response, NextFunction } from "express";
 // import { validationResult, body } from "express-validator";
 // import { ApiError } from "../utils/apiHandlerHelpers";

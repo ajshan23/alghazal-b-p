@@ -148,7 +148,7 @@ exports.deleteQuotation = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
 });
 exports.generateQuotationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { id } = req.params;
-    // Populate all necessary fields
+    // Populate all necessary fields with proper typing
     const quotation = await quotationModel_1.Quotation.findById(id)
         .populate({
         path: "project",
@@ -162,11 +162,15 @@ exports.generateQuotationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res)
         .populate("approvedBy", "firstName lastName signatureImage");
     if (!quotation)
         throw new apiHandlerHelpers_2.ApiError(404, "Quotation not found");
-    // Verify populated data exists
-    if (!quotation.project || !quotation.project.client) {
+    // Verify populated data exists with type guards
+    if (!quotation.project ||
+        typeof quotation.project !== "object" ||
+        !("client" in quotation.project)) {
         throw new apiHandlerHelpers_2.ApiError(400, "Client information not found");
     }
-    // Calculate totals (though they should be pre-calculated by the pre-save hook)
+    const client = quotation.project.client;
+    const preparedBy = quotation.preparedBy;
+    // Calculate totals
     const subtotal = quotation.items.reduce((sum, item) => sum + item.totalPrice, 0);
     const vatAmount = subtotal * (quotation.vatPercentage / 100);
     const netAmount = subtotal + vatAmount;
@@ -174,15 +178,15 @@ exports.generateQuotationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res)
     const formatDate = (date) => {
         return date ? new Date(date).toLocaleDateString("en-GB") : "";
     };
-    const preparedBy = quotation.preparedBy;
-    // const approvedBy = quotation.approvedBy;
+    // Handle estimation
     const estimationId = quotation.estimation;
     const estimation = await estimationModel_1.Estimation.findById(estimationId)
         .populate("approvedBy", "firstName lastName signatureImage")
         .populate("preparedBy", "firstName lastName signatureImage");
+    if (!estimation) {
+        throw new apiHandlerHelpers_2.ApiError(404, "Estimation not found");
+    }
     const approvedBy = estimation.approvedBy;
-    // const approvedBy = estimation.approvedBy;
-    console.log("Approved By:", approvedBy);
     // Prepare HTML content
     let htmlContent = `
     <!DOCTYPE html PUBLIC "">
@@ -310,7 +314,9 @@ exports.generateQuotationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res)
                 Email: ${quotation.project.client.email || "N/A"}
               </p>
               <p class="s2" style="padding-top: 1pt; padding-left: 1pt; text-indent: 0pt; text-align: left;">
-                Site: ${quotation.project.siteAddress || "N/A"}
+                Site: ${quotation.project.location +
+        quotation.project.building +
+        quotation.project.apartmentNumber || "N/A"}
               </p>
             </td>
             <td style="width: 63pt; border-top-style: solid; border-top-width: 2pt; border-left-style: solid; border-left-width: 2pt; border-bottom-style: solid; border-bottom-width: 1pt; border-right-style: solid; border-right-width: 1pt;">
@@ -562,7 +568,7 @@ ${quotation.items
     `;
     // Generate PDF
     const browser = await puppeteer_1.default.launch({
-        headless: "new",
+        headless: "shell",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     try {

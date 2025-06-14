@@ -166,7 +166,7 @@ exports.getEmployeeTrend = (0, asyncHandler_1.asyncHandler)(async (req, res) => 
         employee: {
             id: employee._id,
             name: `${employee.firstName} ${employee.lastName}`,
-            position: employee.position,
+            position: employee.role,
         },
         months: Number(months),
         trendData,
@@ -302,8 +302,8 @@ exports.getProjectAnalytics = (0, asyncHandler_1.asyncHandler)(async (req, res) 
         project: {
             id: project._id,
             name: project.projectName,
-            startDate: project.startDate,
-            endDate: project.endDate,
+            startDate: project.createdAt,
+            endDate: project.updatedAt,
         },
         period,
         year,

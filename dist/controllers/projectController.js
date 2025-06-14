@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -16,7 +49,7 @@ const mailer_1 = require("../utils/mailer");
 const commentModel_1 = require("../models/commentModel");
 const lpoModel_1 = require("../models/lpoModel");
 const dayjs_1 = __importDefault(require("dayjs"));
-const mongoose_1 = require("mongoose");
+const mongoose_1 = __importStar(require("mongoose"));
 const documentNumbers_1 = require("../utils/documentNumbers");
 const expenseModel_1 = require("../models/expenseModel");
 const puppeteer_1 = __importDefault(require("puppeteer"));
@@ -42,9 +75,7 @@ const validStatusTransitions = {
     on_hold: ["in_progress", "work_started", "cancelled"],
     cancelled: [],
     project_closed: [],
-    lpo_received: ["team_assigned", "on_hold", "cancelled"],
     team_assigned: ["work_started", "on_hold"],
-    work_started: ["in_progress", "on_hold", "cancelled"],
 };
 exports.createProject = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { projectName, projectDescription, client, location, building, apartmentNumber, } = req.body;
@@ -322,7 +353,9 @@ exports.updateProjectProgress = (0, asyncHandler_1.asyncHandler)(async (req, res
     if (progress === undefined || progress < 0 || progress > 100) {
         throw new apiHandlerHelpers_2.ApiError(400, "Progress must be between 0 and 100");
     }
-    const project = await projectModel_1.Project.findById(id).populate("assignedTo client");
+    const project = await projectModel_1.Project.findById(id)
+        .populate("client")
+        .populate("assignedTo");
     if (!project) {
         throw new apiHandlerHelpers_2.ApiError(404, "Project not found");
     }
@@ -364,14 +397,18 @@ exports.updateProjectProgress = (0, asyncHandler_1.asyncHandler)(async (req, res
             // Get all recipients (client + assigned engineer + admins + super_admins)
             const recipients = [];
             // Add client if exists
-            if (project.client?.email) {
+            if (project.client &&
+                typeof project.client === "object" &&
+                "email" in project.client) {
                 recipients.push({
                     email: project.client.email,
-                    name: project.client.firstName || "Client",
+                    name: project.client.clientName || "Client",
                 });
             }
             // Add assigned engineer if exists
-            if (project.assignedTo?.email) {
+            if (project.assignedTo &&
+                typeof project.assignedTo === "object" &&
+                "email" in project.assignedTo) {
                 recipients.push({
                     email: project.assignedTo.email,
                     name: project.assignedTo.firstName || "Engineer",
@@ -457,9 +494,9 @@ exports.generateInvoiceData = (0, asyncHandler_1.asyncHandler)(async (req, res) 
     if (!projectId || !mongoose_1.Types.ObjectId.isValid(projectId)) {
         throw new apiHandlerHelpers_2.ApiError(400, "Valid project ID is required");
     }
-    // Get project data with more strict validation
+    // Get project data with proper type annotations for populated fields
     const project = await projectModel_1.Project.findById(projectId)
-        .populate("client", "clientName clientAddress mobileNumber contactPerson trnNumber")
+        .populate("client", "clientName clientAddress mobileNumber contactPerson trnNumber pincode")
         .populate("createdBy", "firstName lastName")
         .populate("assignedTo", "firstName lastName")
         .lean();
@@ -482,17 +519,21 @@ exports.generateInvoiceData = (0, asyncHandler_1.asyncHandler)(async (req, res) 
     }
     // Generate invoice number with better format
     const invoiceNumber = `INV-${(0, dayjs_1.default)().year()}${String((0, dayjs_1.default)().month() + 1).padStart(2, "0")}-${Math.floor(1000 + Math.random() * 9000)}`;
-    // Enhanced vendee information
+    // Type-safe client data extraction
+    const clientData = typeof project.client === "object" ? project.client : null;
+    const assignedToData = typeof project.assignedTo === "object" ? project.assignedTo : null;
+    const createdByData = typeof project.createdBy === "object" ? project.createdBy : null;
+    // Enhanced vendee information with proper type checking
     const vendeeInfo = {
-        name: project.client.clientName || "IMDAAD LLC",
-        contactPerson: project.assignedTo
-            ? `Mr. ${project.assignedTo.firstName} ${project.assignedTo.lastName}`
-            : project.client.contactPerson || "N/A",
-        poBox: project.client.pincode || "18220",
-        address: project.client.clientAddress || "DUBAI - UAE",
-        phone: project.client.mobileNumber || "(04) 812 8888",
+        name: clientData?.clientName || "IMDAAD LLC",
+        contactPerson: assignedToData
+            ? `Mr. ${assignedToData.firstName} ${assignedToData.lastName}`
+            : clientData?.clientName || "N/A",
+        poBox: clientData?.pincode || "18220",
+        address: clientData?.clientAddress || "DUBAI - UAE",
+        phone: clientData?.mobileNumber || "(04) 812 8888",
         fax: "(04) 881 8405",
-        trn: project.client.trnNumber || "100236819700003",
+        trn: clientData?.trnNumber || "100236819700003",
         grnNumber: lpo.lpoNumber || "N/A",
         supplierNumber: "PO25IMD7595",
         servicePeriod: `${(0, dayjs_1.default)(project.createdAt).format("DD-MM-YYYY")} to ${(0, dayjs_1.default)().format("DD-MM-YYYY")}`,
@@ -514,7 +555,7 @@ exports.generateInvoiceData = (0, asyncHandler_1.asyncHandler)(async (req, res) 
         unitPrice: item.unitPrice || 0,
         total: item.totalPrice || 0,
     }));
-    // Enhanced response structure
+    // Enhanced response structure with type-safe checks
     const response = {
         _id: project._id.toString(),
         invoiceNumber,
@@ -532,9 +573,9 @@ exports.generateInvoiceData = (0, asyncHandler_1.asyncHandler)(async (req, res) 
             totalReceivable: quotation.netAmount || 0,
         },
         preparedBy: {
-            _id: project.createdBy._id.toString(),
-            firstName: project.createdBy.firstName,
-            lastName: project.createdBy.lastName,
+            _id: createdByData?._id.toString() || "",
+            firstName: createdByData?.firstName || "N/A",
+            lastName: createdByData?.lastName || "N/A",
         },
     };
     res
@@ -621,7 +662,9 @@ exports.assignTeamAndDriver = (0, asyncHandler_1.asyncHandler)(async (req, res) 
     project.assignedWorkers = workers;
     project.assignedDriver = driverId;
     project.status = "team_assigned";
-    project.updatedBy = req.user?.userId;
+    project.updatedBy = req.user?.userId
+        ? new mongoose_1.default.Types.ObjectId(req.user.userId)
+        : undefined;
     await project.save();
     // Send notifications (implementation depends on your mailer service)
     // await sendAssignmentNotifications(project, workers, driverId);
@@ -728,69 +771,80 @@ exports.updateWorkersAndDriver = (0, asyncHandler_1.asyncHandler)(async (req, re
         .json(new apiHandlerHelpers_1.ApiResponse(200, updatedProject, "Workers and driver assignments updated successfully"));
 });
 // Notification helper specifically for workers/driver updates
-const sendWorkersDriverNotification = async (project) => {
-    try {
-        // Get all admin and super_admin users
-        const adminUsers = await userModel_1.User.find({
-            role: { $in: ["admin", "super_admin"] },
-            email: { $exists: true, $ne: "" },
-        }).select("email firstName");
-        // Get all assigned workers and driver details
-        const assignedUsers = await userModel_1.User.find({
-            _id: {
-                $in: [
-                    ...(project.driver ? [project.driver] : []),
-                    ...(project.workers || []),
-                ].filter(Boolean),
-            },
-        }).select("email firstName role");
-        // Create list of all recipients (assigned users + admins)
-        const allRecipients = [
-            ...adminUsers.map((admin) => admin.email),
-            ...assignedUsers.map((user) => user.email),
-        ];
-        // Remove duplicates
-        const uniqueRecipients = [...new Set(allRecipients)];
-        // Prepare assignment details for email
-        const assignmentDetails = [];
-        if (project.driver) {
-            const driver = assignedUsers.find((u) => u._id.equals(project.driver));
-            if (driver) {
-                assignmentDetails.push(`Driver: ${driver.firstName}`);
-            }
-        }
-        if (project.workers?.length) {
-            const workers = assignedUsers.filter((u) => project.workers.some((w) => u._id.equals(w)));
-            if (workers.length) {
-                assignmentDetails.push(`Workers: ${workers.map((w) => w.firstName).join(", ")}`);
-            }
-        }
-        // Send email if there are recipients and assignments
-        if (uniqueRecipients.length && assignmentDetails.length) {
-            await mailer_1.mailer.sendEmail({
-                to: uniqueRecipients.join(","),
-                subject: `Project Team Update: ${project.projectName}`,
-                templateParams: {
-                    userName: "Team",
-                    actionUrl: `${process.env.FRONTEND_URL}/app/project-view/${project._id}`,
-                    contactEmail: "propertymanagement@alhamra.ae",
-                    logoUrl: process.env.LOGO_URL,
-                    projectName: project.projectName || "the project",
-                    assignmentDetails: assignmentDetails.join("\n"),
-                },
-                text: `Dear Team,\n\nThe team for project "${project.projectName}" has been updated:\n\n${assignmentDetails.join("\n")}\n\nView project details: ${process.env.FRONTEND_URL}/app/project-view/${project._id}\n\nBest regards,\nTECHNICAL SERVICE TEAM`,
-                headers: {
-                    "X-Priority": "1",
-                    Importance: "high",
-                },
-            });
-        }
-    }
-    catch (error) {
-        console.error("Error in sendWorkersDriverNotification:", error);
-        throw error;
-    }
-};
+// const sendWorkersDriverNotification = async (project: any) => {
+//   try {
+//     // Get all admin and super_admin users
+//     const adminUsers = await User.find({
+//       role: { $in: ["admin", "super_admin"] },
+//       email: { $exists: true, $ne: "" },
+//     }).select("email firstName");
+//     // Get all assigned workers and driver details
+//     const assignedUsers = await User.find({
+//       _id: {
+//         $in: [
+//           ...(project.driver ? [project.driver] : []),
+//           ...(project.workers || []),
+//         ].filter(Boolean),
+//       },
+//     }).select("email firstName role");
+//     // Create list of all recipients (assigned users + admins)
+//     const allRecipients = [
+//       ...adminUsers.map((admin) => admin.email),
+//       ...assignedUsers.map((user) => user.email),
+//     ];
+//     // Remove duplicates
+//     const uniqueRecipients = [...new Set(allRecipients)];
+//     // Prepare assignment details for email
+//     const assignmentDetails = [];
+//     if (project.driver) {
+//       const driver = assignedUsers.find((u) => u._id.equals(project.driver));
+//       if (driver) {
+//         assignmentDetails.push(`Driver: ${driver.firstName}`);
+//       }
+//     }
+//     if (project.workers?.length) {
+//       const workers = assignedUsers.filter((u) =>
+//         project.workers.some((w: any) => u._id.equals(w))
+//       );
+//       if (workers.length) {
+//         assignmentDetails.push(
+//           `Workers: ${workers.map((w) => w.firstName).join(", ")}`
+//         );
+//       }
+//     }
+//     // Send email if there are recipients and assignments
+//     if (uniqueRecipients.length && assignmentDetails.length) {
+//       await mailer.sendEmail({
+//         to: uniqueRecipients.join(","),
+//         subject: `Project Team Update: ${project.projectName}`,
+//         templateParams: {
+//           userName: "Team",
+//           actionUrl: `${process.env.FRONTEND_URL}/app/project-view/${project._id}`,
+//           contactEmail: "propertymanagement@alhamra.ae",
+//           logoUrl: process.env.LOGO_URL,
+//           projectName: project.projectName || "the project",
+//           assignmentDetails: assignmentDetails.join("\n"),
+//         },
+//         text: `Dear Team,\n\nThe team for project "${
+//           project.projectName
+//         }" has been updated:\n\n${assignmentDetails.join(
+//           "\n"
+//         )}\n\nView project details: ${
+//           process.env.FRONTEND_URL
+//         }/app/project-view/${
+//           project._id
+//         }\n\nBest regards,\nTECHNICAL SERVICE TEAM`,
+//         headers: {
+//           "X-Priority": "1",
+//           Importance: "high",
+//         },
+//       });
+//     }
+//   } catch (error) {
+//     console.error("Error in sendWorkersDriverNotification:", error);
+//     throw error;
+//   }
+// };
 exports.getDriverProjects = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const driverId = req.user?.userId;
     if (!driverId) {
@@ -854,7 +908,11 @@ exports.generateInvoicePdf = (0, asyncHandler_1.asyncHandler)(async (req, res) =
     if (!project) {
         throw new apiHandlerHelpers_2.ApiError(404, "Project not found");
     }
-    // Get quotation data
+    // Type-safe access to populated fields
+    const client = project.client;
+    const assignedTo = project.assignedTo;
+    const createdBy = project.createdBy;
+    // Rest of your existing code...
     const quotation = await quotationModel_1.Quotation.findOne({ project: projectId });
     if (!quotation) {
         throw new apiHandlerHelpers_2.ApiError(404, "Quotation not found for this project");
@@ -3008,19 +3066,19 @@ exports.generateInvoicePdf = (0, asyncHandler_1.asyncHandler)(async (req, res) =
           <tr class="row4">
             <td class="column0 style18 s style19 pl pt" colspan="4">
               <span style="font-weight: bold; color: #000000; font-family: 'Calibri'; font-size: 11pt;">
-                ${project.client.clientName || "IMDAAD LLC"}<br />
+                ${client.clientName || ""}<br />
               </span>
               <span style="color: #000000; font-family: 'Calibri'; font-size: 11pt">
-                ${project.assignedTo
-        ? `Mr. ${project.assignedTo.firstName} ${project.assignedTo.lastName}`
+                ${assignedTo
+        ? `Mr. ${assignedTo.firstName} ${assignedTo.lastName}`
         : "N/A"} <br />
-                PB ${project.client.pincode || "18220"} <br>
-                ${project.client.clientAddress || "DUBAI - UAE"}<br />
-                Phone: ${project.client.mobileNumber || "(04) 812 8888"}<br />
-                Fax: ${project.client.telephoneNumber || "(04) 881 8405"}<br />
+                PB ${client.pincode || "18220"} <br>
+                ${client.clientAddress || "DUBAI - UAE"}<br />
+                Phone: ${client.mobileNumber || "(04) 812 8888"}<br />
+                Fax: ${client.telephoneNumber || "(04) 881 8405"}<br />
               </span>
               <span style="font-weight: bold; color: #000000; font-family: 'Calibri'; font-size: 11pt;">
-                TRN#: ${project.client.trnNumber || "100236819700003"}
+                TRN#: ${client.trnNumber || "100236819700003"}
               </span>
             </td>
             <td class="column4 style10 s style11 pt" colspan="3">
@@ -3105,9 +3163,9 @@ exports.generateInvoicePdf = (0, asyncHandler_1.asyncHandler)(async (req, res) =
           <tr class="row16">
             <td class="column0 style32 s style34" colspan="7">
               <div style="display: flex; align-items: center; justify-content: end;">
-                ${project.createdBy?.signatureImage
+                ${createdBy?.signatureImage
         ? `
-                  <img src="${project.createdBy.signatureImage}" alt="Signature" width="50" height="50">
+                  <img src="${createdBy.signatureImage}" alt="Signature" width="50" height="50">
                 `
         : ""}
                 <img src="https://krishnadas-test-1.s3.ap-south-1.amazonaws.com/alghazal/seal.png" alt="seal" width="100" height="100">
@@ -3124,7 +3182,7 @@ exports.generateInvoicePdf = (0, asyncHandler_1.asyncHandler)(async (req, res) =
     `;
     // Generate PDF
     const browser = await puppeteer_1.default.launch({
-        headless: "new",
+        headless: "shell",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     try {

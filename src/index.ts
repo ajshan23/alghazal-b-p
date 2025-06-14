@@ -43,7 +43,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: "*", // 👈 must be specific, not '*'
+    origin: "https://new.alghazalgroup.com", // 👈 must be specific, not '*'
     credentials: true, // 👈 required for cookies/auth headers
   })
 );
@@ -52,7 +52,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use(morgan("dev")); // Logging
-app.get("/test-log", (req, res) => {
+app.get("/", (req, res) => {
   console.log("Test log route hit"); // This should appear in console
   res.send("Test log");
 });
@@ -70,9 +70,6 @@ app.use("/api/expense", expenseRouter);
 app.use("/api/analytics", analyticsRouter);
 
 app.use(errorHandler as ErrorRequestHandler);
-app.get("/", (req: Request, res: Response) => {
-  res.send("Hello, Secure and Logged World!");
-});
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   throw new ApiError(404, "Route not found");

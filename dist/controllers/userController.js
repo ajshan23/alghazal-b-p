@@ -12,6 +12,15 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const uploadConf_1 = require("../utils/uploadConf");
 const SALT_ROUNDS = 10;
+// Helper function to process file uploads
+const processFileUpload = async (file, uploadFunction) => {
+    if (!file)
+        return undefined;
+    const result = await uploadFunction(file);
+    return result.success && result.uploadData
+        ? result.uploadData.url
+        : undefined;
+};
 exports.createUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { email, password, phoneNumbers, firstName, lastName, role, salary, accountNumber, emiratesId, passportNumber, } = req.body;
     if (!email ||
@@ -22,7 +31,6 @@ exports.createUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
         !role) {
         throw new apiHandlerHelpers_2.ApiError(400, "All required fields are missing");
     }
-    // Validate salary for non-admin roles
     if (!["super_admin", "admin"].includes(role) &&
         (salary === undefined || salary === null)) {
         throw new apiHandlerHelpers_2.ApiError(400, "Salary is required for this role");
@@ -32,39 +40,13 @@ exports.createUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
         throw new apiHandlerHelpers_2.ApiError(400, "Email already in use");
     }
     const hashedPassword = await bcryptjs_1.default.hash(password, SALT_ROUNDS);
-    // Handle all file uploads
-    let profileImageUrl;
-    let signatureImageUrl;
-    let emiratesIdDocumentUrl;
-    let passportDocumentUrl;
-    // Process profile image
-    if (req.files?.profileImage?.[0]) {
-        const result = await (0, uploadConf_1.uploadUserProfileImage)(req.files.profileImage[0]);
-        if (result.success && result.uploadData) {
-            profileImageUrl = result.uploadData.url;
-        }
-    }
-    // Process signature image
-    if (req.files?.signatureImage?.[0]) {
-        const result = await (0, uploadConf_1.uploadSignatureImage)(req.files.signatureImage[0]);
-        if (result.success && result.uploadData) {
-            signatureImageUrl = result.uploadData.url;
-        }
-    }
-    // Process Emirates ID document
-    if (req.files?.emiratesIdDocument?.[0]) {
-        const result = await (0, uploadConf_1.uploadEmiratesIdDocument)(req.files.emiratesIdDocument[0]);
-        if (result.success && result.uploadData) {
-            emiratesIdDocumentUrl = result.uploadData.url;
-        }
-    }
-    // Process Passport document
-    if (req.files?.passportDocument?.[0]) {
-        const result = await (0, uploadConf_1.uploadPassportDocument)(req.files.passportDocument[0]);
-        if (result.success && result.uploadData) {
-            passportDocumentUrl = result.uploadData.url;
-        }
-    }
+    const files = req.files;
+    const [profileImageUrl, signatureImageUrl, emiratesIdDocumentUrl, passportDocumentUrl,] = await Promise.all([
+        processFileUpload(files.profileImage?.[0], uploadConf_1.uploadUserProfileImage),
+        processFileUpload(files.signatureImage?.[0], uploadConf_1.uploadSignatureImage),
+        processFileUpload(files.emiratesIdDocument?.[0], uploadConf_1.uploadEmiratesIdDocument),
+        processFileUpload(files.passportDocument?.[0], uploadConf_1.uploadPassportDocument),
+    ]);
     const user = await userModel_1.User.create({
         email,
         password: hashedPassword,
@@ -88,24 +70,17 @@ exports.getUsers = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
-    // Build the filter object dynamically
     const filter = {};
-    // Filter by role (if provided)
-    if (req.query.role) {
+    if (req.query.role)
         filter.role = req.query.role;
-    }
-    // Filter by active status (if provided)
-    if (req.query.isActive) {
+    if (req.query.isActive)
         filter.isActive = req.query.isActive === "true";
-    }
-    // Search functionality (if search term provided)
     if (req.query.search) {
         const searchTerm = req.query.search;
         filter.$or = [
-            { firstName: { $regex: searchTerm, $options: "i" } }, // Case-insensitive
+            { firstName: { $regex: searchTerm, $options: "i" } },
             { lastName: { $regex: searchTerm, $options: "i" } },
             { email: { $regex: searchTerm, $options: "i" } },
-            // If you want to search by full name (firstName + lastName)
             {
                 $expr: {
                     $regexMatch: {
@@ -117,14 +92,11 @@ exports.getUsers = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
             },
         ];
     }
-    // Count total matching documents (for pagination)
     const total = await userModel_1.User.countDocuments(filter);
-    // Fetch users with applied filters, pagination, and sorting
-    const users = await userModel_1.User.find(filter, { password: 0 }) // Exclude password
+    const users = await userModel_1.User.find(filter, { password: 0 })
         .skip(skip)
         .limit(limit)
-        .sort({ createdAt: -1 }); // Newest first
-    // Return response with pagination metadata
+        .sort({ createdAt: -1 });
     res.status(200).json(new apiHandlerHelpers_1.ApiResponse(200, {
         users,
         pagination: {
@@ -140,10 +112,8 @@ exports.getUsers = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
 exports.getUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { id } = req.params;
     const user = await userModel_1.User.findById(id).select("-password");
-    if (!user) {
+    if (!user)
         throw new apiHandlerHelpers_2.ApiError(404, "User not found");
-    }
-    // Users can view their own profile, admins can view any
     if (user._id.toString() !== req.user?.userId &&
         req.user?.role !== "admin" &&
         req.user?.role !== "super_admin") {
@@ -156,80 +126,64 @@ exports.getUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
 exports.updateUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { id } = req.params;
     const updateData = req.body;
+    const files = req.files;
     const user = await userModel_1.User.findById(id);
-    if (!user) {
+    if (!user)
         throw new apiHandlerHelpers_2.ApiError(404, "User not found");
-    }
-    // Authorization check
     if (user._id.toString() !== req.user?.userId &&
         req.user?.role !== "admin" &&
         req.user?.role !== "super_admin") {
         throw new apiHandlerHelpers_2.ApiError(403, "Forbidden: Insufficient permissions");
     }
-    // Handle password update
     if (updateData.password) {
         updateData.password = await bcryptjs_1.default.hash(updateData.password, SALT_ROUNDS);
     }
-    // Process profile image if uploaded
-    if (req.files?.profileImage?.[0]) {
-        const result = await (0, uploadConf_1.uploadUserProfileImage)(req.files.profileImage[0]);
+    // Process file uploads
+    if (files.profileImage?.[0]) {
+        const result = await (0, uploadConf_1.uploadUserProfileImage)(files.profileImage[0]);
         if (result.success && result.uploadData) {
-            // Delete old profile image if exists
-            if (user.profileImage) {
+            if (user.profileImage)
                 await (0, uploadConf_1.deleteFileFromS3)(user.profileImage).catch(console.error);
-            }
             updateData.profileImage = result.uploadData.url;
         }
     }
-    // Process signature image if uploaded
-    if (req.files?.signatureImage?.[0]) {
-        const result = await (0, uploadConf_1.uploadSignatureImage)(req.files.signatureImage[0]);
+    if (files.signatureImage?.[0]) {
+        const result = await (0, uploadConf_1.uploadSignatureImage)(files.signatureImage[0]);
         if (result.success && result.uploadData) {
-            // Delete old signature image if exists
-            if (user.signatureImage) {
+            if (user.signatureImage)
                 await (0, uploadConf_1.deleteFileFromS3)(user.signatureImage).catch(console.error);
-            }
             updateData.signatureImage = result.uploadData.url;
         }
     }
-    // Process Emirates ID document if uploaded
-    if (req.files?.emiratesIdDocument?.[0]) {
-        const result = await (0, uploadConf_1.uploadEmiratesIdDocument)(req.files.emiratesIdDocument[0]);
+    if (files.emiratesIdDocument?.[0]) {
+        const result = await (0, uploadConf_1.uploadEmiratesIdDocument)(files.emiratesIdDocument[0]);
         if (result.success && result.uploadData) {
-            // Delete old document if exists
-            if (user.emiratesIdDocument) {
+            if (user.emiratesIdDocument)
                 await (0, uploadConf_1.deleteFileFromS3)(user.emiratesIdDocument).catch(console.error);
-            }
             updateData.emiratesIdDocument = result.uploadData.url;
         }
     }
-    // Process Passport document if uploaded
-    if (req.files?.passportDocument?.[0]) {
-        const result = await (0, uploadConf_1.uploadPassportDocument)(req.files.passportDocument[0]);
+    if (files.passportDocument?.[0]) {
+        const result = await (0, uploadConf_1.uploadPassportDocument)(files.passportDocument[0]);
         if (result.success && result.uploadData) {
-            // Delete old document if exists
-            if (user.passportDocument) {
+            if (user.passportDocument)
                 await (0, uploadConf_1.deleteFileFromS3)(user.passportDocument).catch(console.error);
-            }
             updateData.passportDocument = result.uploadData.url;
         }
     }
-    // Handle document removals if requested
+    // Handle document removals
     if (updateData.removeEmiratesIdDocument === "true") {
-        if (user.emiratesIdDocument) {
+        if (user.emiratesIdDocument)
             await (0, uploadConf_1.deleteFileFromS3)(user.emiratesIdDocument).catch(console.error);
-        }
         updateData.emiratesIdDocument = undefined;
         delete updateData.removeEmiratesIdDocument;
     }
     if (updateData.removePassportDocument === "true") {
-        if (user.passportDocument) {
+        if (user.passportDocument)
             await (0, uploadConf_1.deleteFileFromS3)(user.passportDocument).catch(console.error);
-        }
         updateData.passportDocument = undefined;
         delete updateData.removePassportDocument;
     }
-    // Remove salary if role is being changed to admin/super_admin
     if (updateData.role && ["super_admin", "admin"].includes(updateData.role)) {
         updateData.salary = undefined;
     }
@@ -244,10 +198,8 @@ exports.updateUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
 exports.deleteUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { id } = req.params;
     const user = await userModel_1.User.findById(id);
-    if (!user) {
+    if (!user)
         throw new apiHandlerHelpers_2.ApiError(404, "User not found");
-    }
-    // Prevent self-deletion
     if (user._id.toString() === req.user?.userId) {
         throw new apiHandlerHelpers_2.ApiError(400, "Cannot delete your own account");
     }
@@ -256,87 +208,50 @@ exports.deleteUser = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
 });
 exports.login = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { email, password } = req.body;
-    // Validate input
-    if (!email || !password) {
+    if (!email || !password)
         throw new apiHandlerHelpers_2.ApiError(400, "Email and password are required");
-    }
-    // Find user by email
     const user = await userModel_1.User.findOne({ email }).select("+password");
-    if (!user) {
+    if (!user)
         throw new apiHandlerHelpers_2.ApiError(401, "Invalid credentials");
-    }
-    // Check if user is active
-    if (!user.isActive) {
+    if (!user.isActive)
         throw new apiHandlerHelpers_2.ApiError(403, "Account is inactive. Please contact admin.");
-    }
-    // Verify password
     const isPasswordValid = await bcryptjs_1.default.compare(password, user.password);
-    if (!isPasswordValid) {
+    if (!isPasswordValid)
         throw new apiHandlerHelpers_2.ApiError(401, "Invalid credentials");
-    }
-    // Create JWT token
-    const token = jsonwebtoken_1.default.sign({
-        userId: user._id,
-        email: user.email,
-        role: user.role,
-    }, "alghaza_secret", { expiresIn: "7d" });
-    // Remove password from response
-    const userResponse = user.toObject();
-    // delete userResponse.password;
-    // Set cookie (optional)
+    const token = jsonwebtoken_1.default.sign({ userId: user._id, email: user.email, role: user.role }, "alghaza_secret", { expiresIn: "7d" });
     res.cookie("token", token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
-        maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+        maxAge: 1000 * 60 * 60 * 24 * 7,
     });
     res.status(200).json(new apiHandlerHelpers_1.ApiResponse(200, {
         token,
         user: {
-            role: userResponse.role,
-            name: userResponse.firstName,
-            email: userResponse.email,
+            role: user.role,
+            name: user.firstName,
+            email: user.email,
         },
     }, "Login successful"));
 });
 exports.getActiveEngineers = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
     const engineers = await userModel_1.User.find({
         role: "engineer",
         isActive: true,
     }).select("-v -password");
-    // Return response with pagination metadata
-    res.status(200).json(new apiHandlerHelpers_1.ApiResponse(200, {
-        engineers,
-    }, "Users retrieved successfully"));
+    res
+        .status(200)
+        .json(new apiHandlerHelpers_1.ApiResponse(200, { engineers }, "Engineers retrieved successfully"));
 });
 exports.getActiveDrivers = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-    const drivers = await userModel_1.User.find({
-        role: "driver",
-        isActive: true,
-    }).select("-v -password");
-    // console.log(drivers);
-    // Return response with pagination metadata
-    res.status(200).json(new apiHandlerHelpers_1.ApiResponse(200, {
-        drivers,
-    }, "drivers retrieved successfully"));
+    const drivers = await userModel_1.User.find({ role: "driver", isActive: true }).select("-v -password");
+    res
+        .status(200)
+        .json(new apiHandlerHelpers_1.ApiResponse(200, { drivers }, "Drivers retrieved successfully"));
 });
 exports.getActiveWorkers = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-    const workers = await userModel_1.User.find({
-        role: "worker",
-        isActive: true,
-    }).select("-v -password");
-    // console.log(drivers);
-    // Return response with pagination metadata
-    res.status(200).json(new apiHandlerHelpers_1.ApiResponse(200, {
-        workers,
-    }, "drivers retrieved successfully"));
+    const workers = await userModel_1.User.find({ role: "worker", isActive: true }).select("-v -password");
+    res
+        .status(200)
+        .json(new apiHandlerHelpers_1.ApiResponse(200, { workers }, "Workers retrieved successfully"));
 });
 //# sourceMappingURL=userController.js.map

@@ -11,9 +11,9 @@ const expenseModel_1 = require("../models/expenseModel");
 const projectModel_1 = require("../models/projectModel");
 const attendanceModel_1 = require("../models/attendanceModel");
 const mongoose_1 = require("mongoose");
+const uploadConf_1 = require("../utils/uploadConf");
 const quotationModel_1 = require("../models/quotationModel");
 const puppeteer_1 = __importDefault(require("puppeteer"));
-const uploadConf_1 = require("../utils/uploadConf");
 const calculateLaborDetails = async (projectId) => {
     const project = await projectModel_1.Project.findById(projectId)
         .populate("assignedWorkers", "firstName lastName profileImage salary")
@@ -21,18 +21,18 @@ const calculateLaborDetails = async (projectId) => {
     if (!project) {
         throw new apiHandlerHelpers_2.ApiError(404, "Project not found");
     }
-    // For workers: count their individual attendance days
+    const workersToProcess = project.assignedWorkers || [];
+    const workerIds = workersToProcess.map((worker) => worker._id);
     const workerAttendanceRecords = await attendanceModel_1.Attendance.find({
         project: projectId,
         present: true,
-        user: { $in: project.assignedWorkers },
+        user: { $in: workerIds },
     }).populate("user", "firstName lastName");
     const workerDaysMap = new Map();
     workerAttendanceRecords.forEach((record) => {
         const userIdStr = record.user._id.toString();
         workerDaysMap.set(userIdStr, (workerDaysMap.get(userIdStr) || 0) + 1);
     });
-    // For driver: count unique dates when any attendance was marked for the project
     const projectAttendanceDates = await attendanceModel_1.Attendance.aggregate([
         {
             $match: {
@@ -52,7 +52,7 @@ const calculateLaborDetails = async (projectId) => {
         },
     ]);
     const driverDaysPresent = projectAttendanceDates[0]?.uniqueDates || 0;
-    const workers = project.assignedWorkers.map((worker) => ({
+    const workers = workersToProcess.map((worker) => ({
         user: worker._id,
         firstName: worker.firstName,
         lastName: worker.lastName,
@@ -73,8 +73,8 @@ const calculateLaborDetails = async (projectId) => {
         }
         : {
             user: new mongoose_1.Types.ObjectId(),
-            firstName: "",
-            lastName: "",
+            firstName: "No",
+            lastName: "Driver",
             daysPresent: 0,
             dailySalary: 0,
             totalSalary: 0,
@@ -102,6 +102,9 @@ exports.getProjectLaborData = (0, asyncHandler_1.asyncHandler)(async (req, res) 
 exports.createExpense = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { projectId } = req.params;
     const userId = req.user?.userId;
+    if (!userId) {
+        throw new apiHandlerHelpers_2.ApiError(401, "Unauthorized");
+    }
     // Validate materials field
     if (!req.body.materials) {
         throw new apiHandlerHelpers_2.ApiError(400, "Materials data is required");
@@ -124,7 +127,6 @@ exports.createExpense = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
         // Create file map with index-based matching
         const fileMap = new Map();
         fileList.forEach((file) => {
-            // Extract index from filename (file-0, file-1, etc.)
             const indexMatch = file.originalname.match(/file-(\d+)/);
             if (indexMatch) {
                 fileMap.set(parseInt(indexMatch[1], 10), file);
@@ -134,12 +136,12 @@ exports.createExpense = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
         const processedMaterials = await Promise.all(materials.map(async (material, index) => {
             const materialData = {
                 description: material.description,
-                date: new Date(material.date),
+                date: material.date ? new Date(material.date) : new Date(),
                 invoiceNo: material.invoiceNo,
                 amount: Number(material.amount),
-                supplierName: material.supplierName || undefined,
-                supplierMobile: material.supplierMobile || undefined,
-                supplierEmail: material.supplierEmail || undefined,
+                supplierName: material.supplierName,
+                supplierMobile: material.supplierMobile,
+                supplierEmail: material.supplierEmail,
             };
             // Handle file upload if exists for this index
             if (fileMap.has(index)) {
@@ -162,15 +164,12 @@ exports.createExpense = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
             }
             return materialData;
         }));
-        // Calculate total material cost safely
-        const totalMaterialCost = processedMaterials.reduce((sum, m) => sum + (Number.isFinite(m.amount) ? m.amount : 0), 0);
         // Create expense record
         const expense = await expenseModel_1.Expense.create({
             project: projectId,
             materials: processedMaterials,
             laborDetails,
-            totalMaterialCost,
-            createdBy: userId,
+            createdBy: new mongoose_1.Types.ObjectId(userId),
         });
         return res
             .status(201)
@@ -568,7 +567,7 @@ exports.generateExpensePdf = (0, asyncHandler_1.asyncHandler)(async (req, res) =
     `;
     // Generate PDF
     const browser = await puppeteer_1.default.launch({
-        headless: "new",
+        headless: "shell",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     try {

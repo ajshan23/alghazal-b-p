@@ -14,6 +14,7 @@ const clientModel_1 = require("../models/clientModel");
 const lpoModel_1 = require("../models/lpoModel");
 const documentNumbers_1 = require("../utils/documentNumbers");
 const puppeteer_1 = __importDefault(require("puppeteer"));
+const mongoose_1 = require("mongoose");
 exports.createWorkCompletion = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { projectId } = req.body;
     if (!projectId) {
@@ -43,6 +44,9 @@ exports.uploadWorkCompletionImages = (0, asyncHandler_1.asyncHandler)(async (req
     if (!files || files.length === 0) {
         throw new apiHandlerHelpers_2.ApiError(400, "No images uploaded");
     }
+    if (!req.user?.userId) {
+        throw new apiHandlerHelpers_2.ApiError(401, "Unauthorized");
+    }
     // Convert titles to array if it's a string (for single file upload)
     const titlesArray = Array.isArray(titles) ? titles : [titles];
     const descriptionsArray = Array.isArray(descriptions)
@@ -52,7 +56,7 @@ exports.uploadWorkCompletionImages = (0, asyncHandler_1.asyncHandler)(async (req
     if (titlesArray.length !== files.length) {
         throw new apiHandlerHelpers_2.ApiError(400, "Number of titles must match number of images");
     }
-    if (titlesArray.some((title) => !title || typeof title !== "string" || !title.trim())) {
+    if (titlesArray.some((title) => !title?.trim())) {
         throw new apiHandlerHelpers_2.ApiError(400, "All images must have a non-empty title");
     }
     // Find or create work completion record
@@ -60,21 +64,26 @@ exports.uploadWorkCompletionImages = (0, asyncHandler_1.asyncHandler)(async (req
     if (!workCompletion) {
         workCompletion = await workCompletionModel_1.WorkCompletion.create({
             project: projectId,
-            createdBy: req.user?.userId,
+            createdBy: req.user.userId,
+            images: [], // Initialize empty images array
         });
     }
-    else if (workCompletion.createdBy.toString() !== req.user?.userId) {
+    else if (workCompletion.createdBy.toString() !== req.user.userId.toString()) {
         throw new apiHandlerHelpers_2.ApiError(403, "Not authorized to update this work completion");
     }
     const uploadResults = await (0, uploadConf_1.uploadWorkCompletionImagesToS3)(files);
     if (!uploadResults.success || !uploadResults.uploadData) {
         throw new apiHandlerHelpers_2.ApiError(500, "Failed to upload images to S3");
     }
-    const newImages = files.map((file, index) => ({
+    // Create properly typed image objects with all required fields
+    const newImages = uploadResults.uploadData.map((fileData, index) => ({
+        _id: new mongoose_1.Types.ObjectId(), // Mongoose will automatically add this if not provided
         title: titlesArray[index],
-        imageUrl: uploadResults.uploadData[index].url,
-        s3Key: uploadResults.uploadData[index].key,
+        imageUrl: fileData.url,
+        s3Key: fileData.key,
         description: descriptionsArray[index] || "",
+        uploadedAt: new Date(),
+        // Include any other fields defined in IWorkCompletionImage
     }));
     workCompletion.images.push(...newImages);
     await workCompletion.save();
@@ -148,16 +157,18 @@ exports.getCompletionData = (0, asyncHandler_1.asyncHandler)(async (req, res) =>
     if (!projectId) {
         throw new apiHandlerHelpers_2.ApiError(400, "Project ID is required");
     }
-    // Get project details
+    // Get project details with proper typing for populated fields
     const project = await projectModel_1.Project.findById(projectId)
-        .populate("client", "clientName ")
+        .populate("client", "clientName")
         .populate("assignedTo", "firstName lastName")
         .populate("createdBy", "firstName lastName");
     if (!project) {
         throw new apiHandlerHelpers_2.ApiError(404, "Project not found");
     }
-    // Get client details
-    const client = await clientModel_1.Client.findById(project.client);
+    // Type assertion for populated project
+    const populatedProject = project;
+    // Get client details (already populated)
+    const client = populatedProject.client;
     if (!client) {
         throw new apiHandlerHelpers_2.ApiError(404, "Client not found");
     }
@@ -169,29 +180,32 @@ exports.getCompletionData = (0, asyncHandler_1.asyncHandler)(async (req, res) =>
     const workCompletion = await workCompletionModel_1.WorkCompletion.findOne({ project: projectId })
         .populate("createdBy", "firstName lastName")
         .sort({ createdAt: -1 });
-    // Construct the response object
+    // Construct the response object with proper typing
     const responseData = {
-        _id: project._id.toString(),
-        referenceNumber: `COMP-${project._id.toString().slice(-6).toUpperCase()}`,
-        fmContractor: "Al Ghazal Al Abyad Technical Services", // Hardcoded as per frontend
+        _id: populatedProject._id.toString(),
+        referenceNumber: `COMP-${populatedProject._id
+            .toString()
+            .slice(-6)
+            .toUpperCase()}`,
+        fmContractor: "Al Ghazal Al Abyad Technical Services",
         subContractor: client.clientName,
-        projectDescription: project.projectDescription || "No description provided",
-        location: `${project.siteAddress}, ${project.siteLocation}`,
-        completionDate: project.updatedAt?.toISOString() || new Date().toISOString(),
+        projectDescription: populatedProject.projectDescription || "No description provided",
+        location: `${populatedProject.location}, ${populatedProject.building}, ${populatedProject.apartmentNumber}`,
+        completionDate: populatedProject.updatedAt?.toISOString() || new Date().toISOString(),
         lpoNumber: lpo?.lpoNumber || "Not available",
         lpoDate: lpo?.lpoDate?.toISOString() || "Not available",
         handover: {
-            company: "AL GHAZAL AL ABYAD TECHNICAL SERVICES", // Hardcoded as per frontend
-            name: project.assignedTo
-                ? `${project.assignedTo.firstName} ${project.assignedTo.lastName}`
+            company: "AL GHAZAL AL ABYAD TECHNICAL SERVICES",
+            name: populatedProject.assignedTo
+                ? `${populatedProject.assignedTo.firstName} ${populatedProject.assignedTo.lastName}`
                 : "Not assigned",
-            signature: "", // Will be added later
-            date: project.updatedAt?.toISOString() || new Date().toISOString(),
+            signature: "",
+            date: populatedProject.updatedAt?.toISOString() || new Date().toISOString(),
         },
         acceptance: {
             company: client.clientName,
-            name: client.clientName, // Using client name as representative
-            signature: "", // Will be added later
+            name: client.clientName,
+            signature: "",
             date: new Date().toISOString(),
         },
         sitePictures: workCompletion?.images.map((img) => ({
@@ -199,10 +213,13 @@ exports.getCompletionData = (0, asyncHandler_1.asyncHandler)(async (req, res) =>
             caption: img.title,
         })) || [],
         project: {
-            _id: project._id.toString(),
-            projectName: project.projectName,
+            _id: populatedProject._id.toString(),
+            projectName: populatedProject.projectName,
         },
-        preparedBy: project.createdBy,
+        preparedBy: {
+            _id: populatedProject.createdBy._id.toString(),
+            name: `${populatedProject.createdBy.firstName} ${populatedProject.createdBy.lastName}`,
+        },
         createdAt: workCompletion?.createdAt?.toISOString() || new Date().toISOString(),
         updatedAt: workCompletion?.updatedAt?.toISOString() || new Date().toISOString(),
     };
@@ -458,7 +475,7 @@ exports.generateCompletionCertificatePdf = (0, asyncHandler_1.asyncHandler)(asyn
     `;
     // Generate PDF
     const browser = await puppeteer_1.default.launch({
-        headless: "new",
+        headless: "shell",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     try {

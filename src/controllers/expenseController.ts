@@ -3,13 +3,20 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { ApiResponse } from "../utils/apiHandlerHelpers";
 import { ApiError } from "../utils/apiHandlerHelpers";
 import { Expense } from "../models/expenseModel";
-import { Project } from "../models/projectModel";
+import { IProject, Project } from "../models/projectModel";
 import { Attendance } from "../models/attendanceModel";
 import { Types } from "mongoose";
-import dayjs from "dayjs";
+import { deleteFileFromS3, uploadExpenseDocument } from "../utils/uploadConf";
 import { Quotation } from "../models/quotationModel";
 import puppeteer from "puppeteer";
-import { deleteFileFromS3, uploadExpenseDocument } from "../utils/uploadConf";
+
+interface PopulatedUser {
+  _id: Types.ObjectId;
+  firstName: string;
+  lastName: string;
+  profileImage?: string;
+  salary?: number;
+}
 
 interface MaterialInput {
   description: string;
@@ -45,19 +52,27 @@ interface DriverLabor {
 
 const calculateLaborDetails = async (projectId: string) => {
   const project = await Project.findById(projectId)
-    .populate("assignedWorkers", "firstName lastName profileImage salary")
-    .populate("assignedDriver", "firstName lastName profileImage salary");
+    .populate<{ assignedWorkers: PopulatedUser[] }>(
+      "assignedWorkers",
+      "firstName lastName profileImage salary"
+    )
+    .populate<{ assignedDriver: PopulatedUser }>(
+      "assignedDriver",
+      "firstName lastName profileImage salary"
+    );
 
   if (!project) {
     throw new ApiError(404, "Project not found");
   }
 
-  // For workers: count their individual attendance days
+  const workersToProcess = project.assignedWorkers || [];
+  const workerIds = workersToProcess.map((worker) => worker._id);
+
   const workerAttendanceRecords = await Attendance.find({
     project: projectId,
     present: true,
-    user: { $in: project.assignedWorkers },
-  }).populate("user", "firstName lastName");
+    user: { $in: workerIds },
+  }).populate<{ user: PopulatedUser }>("user", "firstName lastName");
 
   const workerDaysMap = new Map<string, number>();
   workerAttendanceRecords.forEach((record) => {
@@ -65,7 +80,6 @@ const calculateLaborDetails = async (projectId: string) => {
     workerDaysMap.set(userIdStr, (workerDaysMap.get(userIdStr) || 0) + 1);
   });
 
-  // For driver: count unique dates when any attendance was marked for the project
   const projectAttendanceDates = await Attendance.aggregate([
     {
       $match: {
@@ -87,7 +101,7 @@ const calculateLaborDetails = async (projectId: string) => {
 
   const driverDaysPresent = projectAttendanceDates[0]?.uniqueDates || 0;
 
-  const workers = project.assignedWorkers.map((worker: any) => ({
+  const workers = workersToProcess.map((worker) => ({
     user: worker._id,
     firstName: worker.firstName,
     lastName: worker.lastName,
@@ -110,8 +124,8 @@ const calculateLaborDetails = async (projectId: string) => {
       }
     : {
         user: new Types.ObjectId(),
-        firstName: "",
-        lastName: "",
+        firstName: "No",
+        lastName: "Driver",
         daysPresent: 0,
         dailySalary: 0,
         totalSalary: 0,
@@ -144,110 +158,108 @@ export const getProjectLaborData = asyncHandler(
   }
 );
 
-export const createExpense = asyncHandler(async (req: Request, res: Response) => {
-  const { projectId } = req.params;
-  const userId = req.user?.userId;
+export const createExpense = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { projectId } = req.params;
+    const userId = req.user?.userId;
 
-  // Validate materials field
-  if (!req.body.materials) {
-    throw new ApiError(400, "Materials data is required");
-  }
+    if (!userId) {
+      throw new ApiError(401, "Unauthorized");
+    }
 
-  let materials: MaterialInput[];
-  try {
-    materials =
-      typeof req.body.materials === "string"
-        ? JSON.parse(req.body.materials)
-        : req.body.materials;
-  } catch (err) {
-    throw new ApiError(400, "Invalid materials JSON format");
-  }
+    // Validate materials field
+    if (!req.body.materials) {
+      throw new ApiError(400, "Materials data is required");
+    }
 
-  // Get uploaded files
-  const files = req.files as
-    | { [fieldname: string]: Express.Multer.File[] }
-    | undefined;
-  const fileList = files?.files ? [...files.files] : [];
+    let materials: MaterialInput[];
+    try {
+      materials =
+        typeof req.body.materials === "string"
+          ? JSON.parse(req.body.materials)
+          : req.body.materials;
+    } catch (err) {
+      throw new ApiError(400, "Invalid materials JSON format");
+    }
 
-  try {
-    const laborDetails = await calculateLaborDetails(projectId);
+    // Get uploaded files
+    const files = req.files as
+      | { [fieldname: string]: Express.Multer.File[] }
+      | undefined;
+    const fileList = files?.files ? [...files.files] : [];
 
-    // Create file map with index-based matching
-    const fileMap = new Map<number, Express.Multer.File>();
-    fileList.forEach((file) => {
-      // Extract index from filename (file-0, file-1, etc.)
-      const indexMatch = file.originalname.match(/file-(\d+)/);
-      if (indexMatch) {
-        fileMap.set(parseInt(indexMatch[1], 10), file);
-      }
-    });
+    try {
+      const laborDetails = await calculateLaborDetails(projectId);
 
-    // Process materials with error handling
-    const processedMaterials = await Promise.all(
-      materials.map(async (material, index) => {
-        const materialData = {
-          description: material.description,
-          date: new Date(material.date),
-          invoiceNo: material.invoiceNo,
-          amount: Number(material.amount),
-          supplierName: material.supplierName || undefined,
-          supplierMobile: material.supplierMobile || undefined,
-          supplierEmail: material.supplierEmail || undefined,
-        };
+      // Create file map with index-based matching
+      const fileMap = new Map<number, Express.Multer.File>();
+      fileList.forEach((file) => {
+        const indexMatch = file.originalname.match(/file-(\d+)/);
+        if (indexMatch) {
+          fileMap.set(parseInt(indexMatch[1], 10), file);
+        }
+      });
 
-        // Handle file upload if exists for this index
-        if (fileMap.has(index)) {
-          try {
-            const uploadResult = await uploadExpenseDocument(
-              fileMap.get(index)!
-            );
-            if (!uploadResult.success) {
-              console.error(`File upload failed for item ${index + 1}`);
+      // Process materials with error handling
+      const processedMaterials = await Promise.all(
+        materials.map(async (material, index) => {
+          const materialData: MaterialInput = {
+            description: material.description,
+            date: material.date ? new Date(material.date) : new Date(),
+            invoiceNo: material.invoiceNo,
+            amount: Number(material.amount),
+            supplierName: material.supplierName,
+            supplierMobile: material.supplierMobile,
+            supplierEmail: material.supplierEmail,
+          };
+
+          // Handle file upload if exists for this index
+          if (fileMap.has(index)) {
+            try {
+              const uploadResult = await uploadExpenseDocument(
+                fileMap.get(index)!
+              );
+              if (!uploadResult.success) {
+                console.error(`File upload failed for item ${index + 1}`);
+                return materialData;
+              }
+              return {
+                ...materialData,
+                documentUrl: uploadResult.uploadData?.url,
+                documentKey: uploadResult.uploadData?.key,
+              };
+            } catch (uploadError) {
+              console.error(
+                `File upload error for material ${index}:`,
+                uploadError
+              );
               return materialData;
             }
-            return {
-              ...materialData,
-              documentUrl: uploadResult.uploadData?.url,
-              documentKey: uploadResult.uploadData?.key,
-            };
-          } catch (uploadError) {
-            console.error(
-              `File upload error for material ${index}:`,
-              uploadError
-            );
-            return materialData;
           }
-        }
-        return materialData;
-      })
-    );
+          return materialData;
+        })
+      );
 
-    // Calculate total material cost safely
-    const totalMaterialCost = processedMaterials.reduce(
-      (sum, m) => sum + (Number.isFinite(m.amount) ? m.amount : 0),
-      0
-    );
+      // Create expense record
+      const expense = await Expense.create({
+        project: projectId,
+        materials: processedMaterials,
+        laborDetails,
+        createdBy: new Types.ObjectId(userId),
+      });
 
-    // Create expense record
-    const expense = await Expense.create({
-      project: projectId,
-      materials: processedMaterials,
-      laborDetails,
-      totalMaterialCost,
-      createdBy: userId,
-    });
-
-    return res
-      .status(201)
-      .json(new ApiResponse(201, expense, "Expense created successfully"));
-  } catch (error: any) {
-    console.error("Expense creation error:", error);
-    const status = error instanceof ApiError ? error.statusCode : 500;
-    const message =
-      error instanceof Error ? error.message : "Failed to create expense";
-    throw new ApiError(status, message);
+      return res
+        .status(201)
+        .json(new ApiResponse(201, expense, "Expense created successfully"));
+    } catch (error: any) {
+      console.error("Expense creation error:", error);
+      const status = error instanceof ApiError ? error.statusCode : 500;
+      const message =
+        error instanceof Error ? error.message : "Failed to create expense";
+      throw new ApiError(status, message);
+    }
   }
-})
+);
 export const getProjectExpenses = asyncHandler(
   async (req: Request, res: Response) => {
     const { projectId } = req.params;
@@ -522,7 +534,7 @@ export const generateExpensePdf = asyncHandler(
 
     // Fetch expense with all related data
     const expense = await Expense.findById(id)
-      .populate({
+      .populate<{ project: IProject }>({
         path: "project",
         select: "projectName projectNumber",
       })
@@ -640,9 +652,9 @@ export const generateExpensePdf = asyncHandler(
       <div class="header">
         <img class="logo" src="https://krishnadas-test-1.s3.ap-south-1.amazonaws.com/alghazal/logo.png" alt="Company Logo">
         <div class="document-title">EXPENSE REPORT</div>
-        <div class="project-info">${expense.project.projectName} (${
-      expense.project.projectNumber
-    })</div>
+        <div class="project-info">${
+          (expense.project as IProject).projectName
+        } (${(expense.project as IProject).projectNumber})</div>
       </div>
 
       <div class="section">
@@ -763,7 +775,7 @@ export const generateExpensePdf = asyncHandler(
 
     // Generate PDF
     const browser = await puppeteer.launch({
-      headless: "new",
+      headless: "shell",
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
@@ -788,7 +800,9 @@ export const generateExpensePdf = asyncHandler(
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename=expense-report-${expense.project.projectNumber}.pdf`
+        `attachment; filename=expense-report-${
+          (expense.project as IProject).projectNumber
+        }.pdf`
       );
       res.send(pdfBuffer);
     } finally {

@@ -26,12 +26,10 @@ const estimationSchema = new mongoose_1.Schema({
         type: mongoose_1.Schema.Types.ObjectId,
         ref: "Project",
         required: true,
-        unique: true,
     },
     estimationNumber: {
         type: String,
         required: true,
-        unique: true,
     },
     workStartDate: {
         type: Date,

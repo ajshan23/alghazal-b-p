@@ -75,7 +75,6 @@ const clientSchema = new mongoose_1.Schema({
     trnNumber: {
         type: String,
         required: true,
-        unique: true,
         trim: true,
     },
     accountNumber: {

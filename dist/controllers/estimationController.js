@@ -9,6 +9,7 @@ const apiHandlerHelpers_1 = require("../utils/apiHandlerHelpers");
 const apiHandlerHelpers_2 = require("../utils/apiHandlerHelpers");
 const estimationModel_1 = require("../models/estimationModel");
 const projectModel_1 = require("../models/projectModel");
+const mongoose_1 = require("mongoose");
 const puppeteer_1 = __importDefault(require("puppeteer"));
 const clientModel_1 = require("../models/clientModel");
 const commentModel_1 = require("../models/commentModel");
@@ -100,6 +101,8 @@ exports.approveEstimation = (0, asyncHandler_1.asyncHandler)(async (req, res) =>
     if (typeof isApproved !== "boolean") {
         throw new apiHandlerHelpers_2.ApiError(400, "isApproved must be a boolean");
     }
+    // Convert userId to ObjectId
+    const userIdObject = new mongoose_1.Types.ObjectId(userId);
     const estimation = await estimationModel_1.Estimation.findById(id).populate("project");
     if (!estimation)
         throw new apiHandlerHelpers_2.ApiError(404, "Estimation not found");
@@ -113,30 +116,30 @@ exports.approveEstimation = (0, asyncHandler_1.asyncHandler)(async (req, res) =>
     // Create activity log
     await commentModel_1.Comment.create({
         content: comment || `Estimation ${isApproved ? "approved" : "rejected"}`,
-        user: userId,
+        user: userIdObject,
         project: estimation.project,
         actionType: isApproved ? "approval" : "rejection",
     });
     // Update estimation
     estimation.isApproved = isApproved;
-    estimation.approvedBy = isApproved ? userId : undefined;
+    estimation.approvedBy = isApproved ? userIdObject : undefined;
     estimation.approvalComment = comment;
     await estimation.save();
     // Update project status
     await projectModel_1.Project.findByIdAndUpdate(estimation.project, {
         status: isApproved ? "quotation_approved" : "quotation_rejected",
-        updatedBy: userId,
+        updatedBy: userIdObject,
     });
     try {
         // Get all recipients (assigned engineer + admins + super_admins)
-        const project = await projectModel_1.Project.findById(estimation.project).populate("assignedTo");
+        const project = await projectModel_1.Project.findById(estimation.project).populate("assignedTo", "email firstName lastName");
         const assignedEngineer = project?.assignedTo;
         const admins = await userModel_1.User.find({
             role: { $in: ["admin", "super_admin"] },
             email: { $exists: true, $ne: "" },
         });
         // Get the user who performed the approval
-        const approver = await userModel_1.User.findById(userId);
+        const approver = await userModel_1.User.findById(userIdObject);
         // Prepare recipient list
         const recipients = [];
         // Add assigned engineer if exists
@@ -165,18 +168,15 @@ exports.approveEstimation = (0, asyncHandler_1.asyncHandler)(async (req, res) =>
             checkerName: approver
                 ? `${approver.firstName} ${approver.lastName}`
                 : "an approver",
-            projectName: estimation.project?.projectName || "the project",
-            dueDate: estimation.dueDate?.toLocaleDateString(),
+            projectName: estimation.project.projectName || "the project",
+            dueDate: estimation.validUntil?.toLocaleDateString(),
         };
         // Send email to all recipients
         await mailer_1.mailer.sendEmail({
             to: process.env.NOTIFICATION_INBOX || "notifications@company.com",
             bcc: uniqueRecipients.map((r) => r.email).join(","),
             subject: `Estimation ${isApproved ? "Approved" : "Rejected"}: ${estimation.estimationNumber}`,
-            templateParams: {
-                ...templateParams,
-                content: `The estimation has been ${isApproved ? "approved" : "rejected"} by ${templateParams.checkerName}.`,
-            },
+            templateParams: templateParams, // Just pass the templateParams without content
             text: `Dear Team,\n\nEstimation ${estimation.estimationNumber} for project ${templateParams.projectName} has been ${isApproved ? "approved" : "rejected"} by ${templateParams.checkerName}.\n\nView project: ${templateParams.actionUrl}\n\nBest regards,\nTECHNICAL SERVICE TEAM`,
             headers: {
                 "X-Priority": "1",
@@ -209,16 +209,19 @@ exports.markAsChecked = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     if (estimation.isChecked && isChecked) {
         throw new apiHandlerHelpers_2.ApiError(400, "Estimation is already checked");
     }
+    // Convert userId to ObjectId
+    const userIdObject = new mongoose_1.Types.ObjectId(userId);
     // Create activity log
     await commentModel_1.Comment.create({
-        content: comment || `Estimation ${isChecked ? "checked" : "rejected during check"}`,
-        user: userId,
+        content: comment ||
+            `Estimation ${isChecked ? "checked" : "rejected during check"}`,
+        user: userIdObject,
         project: estimation.project,
         actionType: isChecked ? "check" : "rejection",
     });
     // Update estimation
     estimation.isChecked = isChecked;
-    estimation.checkedBy = isChecked ? userId : undefined;
+    estimation.checkedBy = isChecked ? userIdObject : undefined;
     if (comment)
         estimation.approvalComment = comment;
     await estimation.save();
@@ -226,7 +229,7 @@ exports.markAsChecked = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     if (!isChecked) {
         await projectModel_1.Project.findByIdAndUpdate(estimation.project, {
             status: "draft",
-            updatedBy: userId,
+            updatedBy: userIdObject,
         });
     }
     // Send email to admins if checked
@@ -234,16 +237,16 @@ exports.markAsChecked = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
         try {
             // Find all admin and super_admin users
             const admins = await userModel_1.User.find({
-                role: { $in: ['admin', 'super_admin'] },
-                email: { $exists: true, $ne: '' }
+                role: { $in: ["admin", "super_admin"] },
+                email: { $exists: true, $ne: "" },
             });
             // Get the user who performed the check
-            const checkedByUser = await userModel_1.User.findById(userId);
+            const checkedByUser = await userModel_1.User.findById(userIdObject);
             // Prepare common email content
             const project = estimation.project;
             const templateParams = {
-                userName: "Team", // Generic since we're sending to multiple people
-                actionUrl: `http://localhost:5173/app/project-view/${estimation.project._id}`, // Updated URL format
+                userName: "Team",
+                actionUrl: `http://localhost:5173/app/project-view/${estimation.project._id}`,
                 contactEmail: "propertymanagement@alhamra.ae",
                 logoUrl: "https://krishnadas-test-1.s3.ap-south-1.amazonaws.com/alghazal/logo+alghazal.png",
                 estimationNumber: estimation.estimationNumber,
@@ -251,12 +254,12 @@ exports.markAsChecked = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
                     ? `${checkedByUser.firstName} ${checkedByUser.lastName}`
                     : "a team member",
                 projectName: project?.projectName || "the project",
-                dueDate: estimation.dueDate?.toLocaleDateString()
+                dueDate: estimation.validUntil?.toLocaleDateString(),
             };
             // Send single email to all admins (BCC to hide recipient list)
             await mailer_1.mailer.sendEmail({
-                to: process.env.NOTIFICATION_INBOX || "notifications@company.com", // Primary recipient
-                bcc: admins.map(admin => admin.email).join(','), // Hidden copy to all admins
+                to: process.env.NOTIFICATION_INBOX || "notifications@company.com",
+                bcc: admins.map((admin) => admin.email).join(","),
                 subject: `Estimation Checked: ${estimation.estimationNumber}`,
                 templateParams,
                 text: `Dear Team,\n\nEstimation ${estimation.estimationNumber} for project ${templateParams.projectName} has been checked by ${templateParams.checkerName}.\n\nView project: ${templateParams.actionUrl}\n\nBest regards,\nTECHNICAL SERVICE TEAM`,
@@ -271,7 +274,9 @@ exports.markAsChecked = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
             // Continue even if email fails
         }
     }
-    res.status(200).json(new apiHandlerHelpers_1.ApiResponse(200, estimation, `Estimation ${isChecked ? "checked" : "rejected"} successfully`));
+    res
+        .status(200)
+        .json(new apiHandlerHelpers_1.ApiResponse(200, estimation, `Estimation ${isChecked ? "checked" : "rejected"} successfully`));
 });
 exports.getEstimationsByProject = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const { projectId } = req.params;
@@ -302,12 +307,19 @@ exports.getEstimationDetails = (0, asyncHandler_1.asyncHandler)(async (req, res)
     if (!estimationE) {
         throw new apiHandlerHelpers_2.ApiError(404, "Estimation not found");
     }
-    const clientId = estimationE?.project?.client;
+    // Type assertion for the populated estimation
+    const populatedEstimation = estimationE;
+    // Get client ID safely
+    const clientId = populatedEstimation.project?.client;
     if (!clientId) {
         throw new apiHandlerHelpers_2.ApiError(400, "Client information not found");
     }
     const client = await clientModel_1.Client.findById(clientId);
-    const estimation = { ...estimationE._doc, client };
+    // Prepare response object maintaining the same structure as before
+    const estimation = {
+        ...populatedEstimation.toObject(), // Using toObject() instead of _doc
+        client,
+    };
     res
         .status(200)
         .json(new apiHandlerHelpers_1.ApiResponse(200, estimation, "Estimation details retrieved"));
@@ -379,7 +391,7 @@ exports.generateEstimationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res
     const estimation = await estimationModel_1.Estimation.findById(id)
         .populate({
         path: "project",
-        select: "projectName client location building apartmentNumber ",
+        select: "projectName client location building apartmentNumber",
         populate: {
             path: "client",
             select: "clientName clientAddress email mobileNumber telephoneNumber",
@@ -388,7 +400,6 @@ exports.generateEstimationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res
         .populate("preparedBy", "firstName signatureImage")
         .populate("checkedBy", "firstName signatureImage")
         .populate("approvedBy", "firstName signatureImage");
-    console.log(estimation);
     if (!estimation) {
         throw new apiHandlerHelpers_2.ApiError(404, "Estimation not found");
     }
@@ -396,6 +407,20 @@ exports.generateEstimationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res
     if (!estimation.project || !estimation.project.client) {
         throw new apiHandlerHelpers_2.ApiError(400, "Client information not found");
     }
+    // Type guard to check if populated fields are IUser objects
+    const isPopulatedUser = (user) => {
+        return user && typeof user === "object" && "firstName" in user;
+    };
+    // Get user data with proper typing
+    const preparedBy = isPopulatedUser(estimation.preparedBy)
+        ? estimation.preparedBy
+        : null;
+    const checkedBy = isPopulatedUser(estimation.checkedBy)
+        ? estimation.checkedBy
+        : null;
+    const approvedBy = isPopulatedUser(estimation.approvedBy)
+        ? estimation.approvedBy
+        : null;
     // Calculate totals
     const materialsTotal = estimation.materials.reduce((sum, item) => sum + item.total, 0);
     const labourTotal = estimation.labour.reduce((sum, item) => sum + item.total, 0);
@@ -405,9 +430,9 @@ exports.generateEstimationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res
     const formatDate = (date) => {
         return date ? new Date(date).toLocaleDateString("en-GB") : "";
     };
-    const approvedBy = estimation.approvedBy;
-    const checkedBy = estimation.checkedBy;
-    const preparedBy = estimation.preparedBy;
+    // const approvedBy = estimation.approvedBy;
+    // const checkedBy = estimation.checkedBy;
+    // const preparedBy = estimation.preparedBy;
     // Prepare HTML content
     let htmlContent = `
     <!DOCTYPE html>
@@ -2469,20 +2494,20 @@ exports.generateEstimationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res
         <td class="column1 style54 s style56" colspan="5">ESTIMATION</td>
       </tr>
       <tr class="row3">
-        <td class="column1 style49 s style50" colspan="2" style="padding-left: 10px;">${estimation?.project?.client?.clientName}</td>
+        <td class="column1 style49 s style50" colspan="2" style="padding-left: 10px;">${estimation.project.client.clientName}</td>
         <td class="column3 style10 s">DATE</td>
         <td class="column4 style10 null"></td>
         <td class="column5 style10 null"></td>
       </tr>
       <tr class="row4">
-        <td class="column1 style41 s style42" colspan="2" style="padding-left: 10px;">${estimation?.project?.client?.clientAddress}</td>
+        <td class="column1 style41 s style42" colspan="2" style="padding-left: 10px;">${estimation.project.client.clientAddress}</td>
         <td class="column3 style11 s">OF ESTIMATION</td>
         <td class="column4 style11 null"></td>
         <td class="column5 style11 null"></td>
       </tr>
       <tr class="row5">
         <td class="column1 style41 s style42" colspan="2" style="padding-left: 10px;">
-          ${estimation.project?.location} ,  ${estimation.project?.building} ,  ${estimation.project?.apartmentNumber} 
+          ${estimation.project.location} ,  ${estimation.project.building} ,  ${estimation.project.apartmentNumber} 
         </td>
         <td class="column3 style12 s">${formatDate(new Date())}</td>
         <td class="column4 style12 null"></td>
@@ -2490,7 +2515,7 @@ exports.generateEstimationPdf = (0, asyncHandler_1.asyncHandler)(async (req, res
       </tr>
       <tr class="row6">
                 <td class="column1 style41 s style42" colspan="2" style="padding-left: 10px;">
-${estimation?.project?.client?.email} , ${estimation?.project?.client?.mobileNumber} , ${estimation?.project?.client?.telephoneNumber}</td>
+${estimation.project.client.email} , ${estimation.project.client.mobileNumber} , ${estimation.project.client.telephoneNumber}</td>
         <td class="column3 style1 s">ESTIMATION</td>
         <td class="column4 style3 null"></td>
         <td class="column5 style10 s">PAYMENT</td>
@@ -2518,7 +2543,6 @@ ${estimation?.project?.client?.email} , ${estimation?.project?.client?.mobileNum
 
       <!-- Materials section -->
       <tr class="row10">
-
         <td class="column2 style6 s">MATERIAL</td>
         <td class="column5 style16 s">UOM</td>
         <td class="column3 style6 s">QTY</td>
@@ -2526,10 +2550,8 @@ ${estimation?.project?.client?.email} , ${estimation?.project?.client?.mobileNum
         <td class="column5 style16 s">TOTAL</td>
       </tr>
       ${estimation.materials
-        .map((material, index) => `
+        .map((material) => `
         <tr class="row11">
-        
-          
           <td class="column2 style7 s">${material.description}</td>
           <td class="column5 style16 f">${material.uom}</td>
           <td class="column3 style8 n">${material.quantity.toFixed(2)}</td>
@@ -2539,7 +2561,6 @@ ${estimation?.project?.client?.email} , ${estimation?.project?.client?.mobileNum
       `)
         .join("")}
       <tr class="row16">
-       
         <td class="column2 style35 s style37" colspan="4">TOTAL MATERIALS&nbsp;&nbsp;</td>
         <td class="column5 style18 f">${materialsTotal.toFixed(2)}</td>
       </tr>
@@ -2574,33 +2595,32 @@ ${estimation?.project?.client?.email} , ${estimation?.project?.client?.mobileNum
       </tr>
 
       <!-- Terms and conditions section -->
-   <tr class="row18">
-  <td class="column1 style15 s">TERMS AND CONDITIONS</td>
-  <td class="column2 style9 s">MISCELLANEOUS CHARGES</td>
-  <td class="column3 style22 s">QTY</td>
-  <td class="column4 style6 s">PRICE</td>
-  <td class="column5 style16 s">TOTAL</td>
-</tr>
-${estimation.termsAndConditions
+      <tr class="row18">
+        <td class="column1 style15 s">TERMS AND CONDITIONS</td>
+        <td class="column2 style9 s">MISCELLANEOUS CHARGES</td>
+        <td class="column3 style22 s">QTY</td>
+        <td class="column4 style6 s">PRICE</td>
+        <td class="column5 style16 s">TOTAL</td>
+      </tr>
+      ${estimation.termsAndConditions
         .map((term, index) => `
-  <tr class="row19">
-    ${index === 0
+          <tr class="row19">
+            ${index === 0
         ? `<td class="column1 style34 null" rowspan="${estimation.termsAndConditions.length + 1}"></td>`
         : ""}
-    <td class="column2 style7 s">${term.description}</td>
-    <td class="column3 style21 n">${term.quantity.toFixed(2)}</td>
-    <td class="column4 style8 n">${term.unitPrice.toFixed(2)}</td>
-    <td class="column5 style17 f">${term.total.toFixed(2)}</td>
-  </tr>
-`)
+            <td class="column2 style7 s">${term.description}</td>
+            <td class="column3 style21 n">${term.quantity.toFixed(2)}</td>
+            <td class="column4 style8 n">${term.unitPrice.toFixed(2)}</td>
+            <td class="column5 style17 f">${term.total.toFixed(2)}</td>
+          </tr>
+        `)
         .join("")}
-<tr class="row24">
-  
-  <td class="column2 style35 s style37" colspan="3">
-    TOTAL MISCELLANEOUS &nbsp;&nbsp;
-  </td>
-  <td class="column5 style18 f">${termsTotal.toFixed(2)}</td>
-</tr>
+      <tr class="row24">
+        <td class="column2 style35 s style37" colspan="3">
+          TOTAL MISCELLANEOUS &nbsp;&nbsp;
+        </td>
+        <td class="column5 style18 f">${termsTotal.toFixed(2)}</td>
+      </tr>
 
       <!-- Amount summary -->
       <tr class="row25">
@@ -2631,50 +2651,48 @@ ${estimation.termsAndConditions
 
       <!-- Approval section -->
       <tr class="row28">
-        <td class="column1 style28 s">Prepared By: ${estimation.preparedBy?.firstName || "N/A"}</td>
-        <td class="column2 style29 s">Checked By: ${estimation.checkedBy?.firstName || "N/A"}</td>
+        <td class="column1 style28 s">Prepared By: ${preparedBy?.firstName || "N/A"}</td>
+        <td class="column2 style29 s">Checked By: ${checkedBy?.firstName || "N/A"}</td>
         <td class="column3 style60 s style61" colspan="2">
-          Approved by: ${estimation.approvedBy?.firstName || "N/A"}
+          Approved by: ${approvedBy?.firstName || "N/A"}
         </td>
         <td class="column5 style62 null style63" rowspan="2"></td>
       </tr>
       <tr class="row29">
-      <td class="column1 style31 null" style="text-align: center;">
-        <div style="display: inline-block;">
-         ${preparedBy?.signatureImage
-        ? ` <img
-           style="width: 55px; height: 32px;"
-          src="${preparedBy?.signatureImage}"
-          border="0"
-        />`
+        <td class="column1 style31 null" style="text-align: center;">
+          <div style="display: inline-block;">
+          ${preparedBy?.signatureImage
+        ? `<img
+                style="width: 55px; height: 32px;"
+                src="${preparedBy.signatureImage}"
+                border="0"
+              />`
         : ""}
-          
-        </div>
-      </td>
-      <td class="column2 style30 null" style="text-align: center;">
-        <div style="display: inline-block;">
-        ${checkedBy?.signatureImage
-        ? ` <img
-         style="width: 80px; height: 36px;"
-          src="${checkedBy?.signatureImage}"
-          border="0"
-        />`
+          </div>
+        </td>
+        <td class="column2 style30 null" style="text-align: center;">
+          <div style="display: inline-block;">
+          ${checkedBy?.signatureImage
+        ? `<img
+                style="width: 80px; height: 36px;"
+                src="${checkedBy.signatureImage}"
+                border="0"
+              />`
         : ""}
-         
-        </div>
-      </td>
-      <td class="column3 style60 null style61" colspan="2" style="text-align: center;">
-        <div style="display: inline-block;">
-          ${approvedBy?.signatureImage
-        ? ` <img
-            style="width: 87px; height: 42px;"
-            src="${approvedBy?.signatureImage}"
-            border="0"
-          />`
+          </div>
+        </td>
+        <td class="column3 style60 null style61" colspan="2" style="text-align: center;">
+          <div style="display: inline-block;">
+            ${approvedBy?.signatureImage
+        ? `<img
+                  style="width: 87px; height: 42px;"
+                  src="${approvedBy.signatureImage}"
+                  border="0"
+                />`
         : ""}
-        </div>
-      </td>
-    </tr>
+          </div>
+        </td>
+      </tr>
     </tbody>
   </table>
 </body>
@@ -2682,7 +2700,7 @@ ${estimation.termsAndConditions
   `;
     // Generate PDF
     const browser = await puppeteer_1.default.launch({
-        headless: "new",
+        headless: "shell",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     try {

@@ -17,7 +17,6 @@ const lpoSchema = new mongoose_1.Schema({
     lpoNumber: {
         type: String,
         required: true,
-        unique: true,
     },
     lpoDate: {
         type: Date,
@@ -54,7 +53,6 @@ lpoSchema.pre("save", function (next) {
     next();
 });
 // Indexes
-lpoSchema.index({ project: 1 });
 lpoSchema.index({ lpoNumber: 1 });
 lpoSchema.index({ supplier: 1 });
 lpoSchema.index({ lpoDate: 1 });

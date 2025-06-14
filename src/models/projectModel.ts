@@ -1,8 +1,9 @@
-import { Document, Schema, model, Types } from "mongoose";
+import { Document, Schema, model, Types, ObjectId } from "mongoose";
 import { IClient } from "./clientModel";
 
 export interface IProject extends Document {
   projectName: string;
+  _id: ObjectId;
   projectDescription: string;
   client: Types.ObjectId | IClient;
   location: string;
